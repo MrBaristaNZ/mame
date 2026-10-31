@@ -126,6 +126,8 @@ Crown Melbourne uses regular ASP software.
 #include "cpu/sh/sh4.h"
 #include "machine/eepromser.h"
 #include "machine/ins8250.h"
+#include "machine/microtch.h"
+#include "machine/nvram.h"
 #include "emupal.h"
 #include "screen.h"
 
@@ -139,12 +141,19 @@ public:
 		m_maincpu(*this, "maincpu"),
 		m_uart0(*this, "uart0"),
 		m_uart1(*this, "uart1"),
+		m_uart2(*this, "uart2"),
+		m_uart3(*this, "uart3"),
 		m_eeprom0(*this, "eeprom0"),
 		m_palette(*this, "palette"),
-		m_vram(*this, "vram")
+		m_vram(*this, "vram"),
+		m_mainram(*this, "mainram"),
+		m_keys(*this, "KEYS"),
+		m_doors(*this, "DOORS"),
+		m_buttons(*this, "BUTTONS")
 	{ }
 
 	void aristmk6(machine_config &config);
+	DECLARE_INPUT_CHANGED_MEMBER(coin_inserted);
 
 private:
 	void testIrq();
@@ -156,6 +165,38 @@ private:
 	uint64_t hwver_r();
 	uint32_t screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
 
+	// PLX PCI9054 local-side registers and its direct-master I/O / configuration window
+	uint32_t plx_r(offs_t offset, uint32_t mem_mask = ~0);
+	void plx_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+	uint32_t pci_window_r(offs_t offset, uint32_t mem_mask = ~0);
+	void pci_window_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+
+	// NEC PowerVR PMX1 (PCI 1033:0067) in PCI slot 12: configuration space and I/O register block
+	uint32_t pmx_cfg_r(int reg);
+	void pmx_cfg_w(int reg, uint32_t data, uint32_t mem_mask);
+	uint32_t pmx_reg_r(offs_t reg, uint32_t mem_mask);
+	void pmx_reg_w(offs_t reg, uint32_t data, uint32_t mem_mask);
+
+	// PMX1 embedded microcode processor, high level
+	u32 pmx_mem_r(u32 addr) const;
+	void pmx_mem_w(u32 addr, u32 data);
+	void pmx_start_microcode();
+	void pmx_doorbell();
+	void pmx_process_fifo();
+	void pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0);
+	void pmx_fill(u32 dst, int dx, int dy, int dpitch, int w, int h, u32 color);
+	void pmx_text(u32 pkt);
+	void pmx_update_irq();
+	template <int N> void uart_int_w(int state);
+	void vblank_w(int state);
+
+	// SPI I/O bus controller in the FPGA
+	uint8_t spi_data_r();
+	void spi_data_w(uint8_t data);
+	void spi_channel_w(uint8_t data);
+	TIMER_CALLBACK_MEMBER(spi_done);
+
+	virtual void machine_start() override ATTR_COLD;
 	virtual void video_start() override ATTR_COLD;
 	virtual void machine_reset() override ATTR_COLD;
 	void aristmk6_map(address_map &map) ATTR_COLD;
@@ -163,25 +204,101 @@ private:
 
 	u8 irl0pend = 0, irl0en = 0;
 	u8 irl1pend = 0, irl1en = 0;
-	u8 irl2pend = 0, irl2en = 0;    // UARTs ?
+	u8 irl2pend = 0, irl2en = 0;    // UARTs: BIOS UART numbers 0-3 = bits 0-3
+	u8 m_uart_irq = 0;
+	u8 m_door_strobe = 0;
+	attotime m_coin_time = attotime::never;
 	u8 irl3pend0 = 0, irl3en0 = 0;
 	u8 irl3pend1 = 0, irl3en1 = 0;
+
+	u32 m_plx_regs[0x100 / 4]{};      // local-side register file (PCI config shadow 0x00-0x7f, local config 0x80-0xff)
+	u32 m_pmx_cfg[0x100 / 4]{};       // PMX1 PCI configuration space
+	u32 m_pmx_regs[0x100 / 4]{};      // PMX1 I/O register block (BAR4)
+	u16 m_pmx_idx[0x400]{};           // PMX1 indexed registers behind I/O 0xc0/0xc8
+	u32 m_pmx_idx_status = 0;         // value read back at I/O 0xc8
+	u32 m_display_base = 0;           // VRAM offset of the displayed framebuffer
+	u32 m_cif_bg0 = 0;                // PMX address of BG0Data.CIFCtl, learned from the boot handshake
+	u32 m_async_woff = 0;             // host address of the async ring write offset
+
+	u8 m_spi_tx[8][0x14]{};           // bytes shifted out in the current frame, per channel
+	u8 m_spi_prev[8][0x14]{};         // bytes shifted out in the previous frame
+	u8 m_spi_frames[8]{};             // frames seen per channel (saturates)
+	u8 m_spi_channel = 0;
+	u8 m_spi_pos = 0;
+	u8 m_spi_rx = 0;
+	emu_timer *m_spi_timer = nullptr;
 
 	required_device<sh7750_device> m_maincpu;
 	required_device<ns16550_device> m_uart0;
 	required_device<ns16550_device> m_uart1;
+	required_device<ns16550_device> m_uart2;
+	required_device<ns16550_device> m_uart3;
 	required_device<eeprom_serial_93cxx_device> m_eeprom0;
 	required_device<palette_device> m_palette;
 	required_shared_ptr<uint64_t> m_vram;
+	required_shared_ptr<uint64_t> m_mainram;
+	required_ioport m_keys;
+	required_ioport m_doors;
+	required_ioport m_buttons;
 };
 
+
+void aristmk6_state::machine_start()
+{
+	// the UTLB is an identity map apart from the 0x03c00000 PCI window, which is mapped directly above
+	m_maincpu->sh2drc_add_fastram(0x00000000, 0x003fffff, true, memregion("maincpu")->base());
+	m_maincpu->sh2drc_add_fastram(0x04000000, 0x05ffffff, false, &m_vram[0]);
+	m_maincpu->sh2drc_add_fastram(0x08000000, 0x0bffffff, true, memregion("game_rom")->base());
+	m_maincpu->sh2drc_add_fastram(0x0c000000, 0x0cffffff, false, &m_mainram[0]);
+
+	save_item(NAME(m_plx_regs));
+	save_item(NAME(m_pmx_cfg));
+	save_item(NAME(m_pmx_regs));
+	save_item(NAME(m_pmx_idx));
+	save_item(NAME(m_pmx_idx_status));
+	save_item(NAME(m_display_base));
+	save_item(NAME(m_cif_bg0));
+	save_item(NAME(m_async_woff));
+	save_item(NAME(m_uart_irq));
+	save_item(NAME(m_door_strobe));
+	save_item(NAME(m_coin_time));
+	save_item(NAME(m_spi_tx));
+	save_item(NAME(m_spi_prev));
+	save_item(NAME(m_spi_frames));
+	save_item(NAME(m_spi_channel));
+	save_item(NAME(m_spi_pos));
+	save_item(NAME(m_spi_rx));
+
+	m_spi_timer = timer_alloc(FUNC(aristmk6_state::spi_done), this);
+}
 
 void aristmk6_state::video_start()
 {
 }
+
 void aristmk6_state::machine_reset()
 {
 	irl0pend = irl0en = irl1pend = irl1en = irl2pend = irl2en = irl3pend0 = irl3en0 = irl3pend1 = irl3en1 = 0;
+
+	std::fill(std::begin(m_plx_regs), std::end(m_plx_regs), 0);
+	std::fill(std::begin(m_pmx_regs), std::end(m_pmx_regs), 0);
+	std::fill(std::begin(m_pmx_idx), std::end(m_pmx_idx), 0);
+	m_pmx_idx_status = 0;
+	m_display_base = 0;
+	m_cif_bg0 = 0;
+	m_async_woff = 0;
+
+	memset(m_spi_tx, 0, sizeof(m_spi_tx));
+	memset(m_spi_prev, 0, sizeof(m_spi_prev));
+	memset(m_spi_frames, 0, sizeof(m_spi_frames));
+	m_spi_channel = m_spi_pos = m_spi_rx = 0;
+	m_spi_timer->adjust(attotime::never);
+
+	std::fill(std::begin(m_pmx_cfg), std::end(m_pmx_cfg), 0);
+	m_pmx_cfg[0x00 / 4] = 0x00671033;   // device 0x0067, vendor 0x1033 (NEC)
+	m_pmx_cfg[0x08 / 4] = 0x03000001;   // display controller, revision 1
+	m_pmx_cfg[0x20 / 4] = 0x00000001;   // BAR4: I/O space
+	m_pmx_cfg[0x3c / 4] = 0x00000100;   // interrupt pin INTA#
 }
 
 uint32_t aristmk6_state::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect)
@@ -273,31 +390,14 @@ uint32_t aristmk6_state::screen_update(screen_device &screen, bitmap_rgb32 &bitm
     }
 */
 
-	// TODO: honor cliprect, remove count variable, RGB565 format is unconfirmed, likely double buffered
-	int count = 0;
-	for (int y = 0; y < 480; y++)
+	// 640x480, 32 bpp (xRGB), pitch 640 pixels; the BIOS double buffers at VRAM 0x000000 / 0x12c000
+	const u32 *const vram = reinterpret_cast<const u32 *>(&m_vram[0]);
+	const u32 words = m_vram.bytes() / 4;
+	for (int y = cliprect.min_y; y <= cliprect.max_y; y++)
 	{
-		for (int x = 0; x < 640 / 2; x++)
-		{
-			uint64_t pix = m_vram[count];
-
-			uint32_t pix1;
-			u8 r, g, b;
-
-			pix1 = pix & 0xffffffff;
-			r = pal5bit((pix1 & 0x001f) >> 0);
-			g = pal6bit((pix1 & 0x07e0) >> 5);
-			b = pal5bit((pix1 & 0xf800) >> 11);
-			bitmap.pix(y, x * 2) = r | g << 8 | b << 16;
-
-			pix1 = pix >> 32;
-			r = pal5bit((pix1 & 0x001f) >> 0);
-			g = pal6bit((pix1 & 0x07e0) >> 5);
-			b = pal5bit((pix1 & 0xf800) >> 11);
-			bitmap.pix(y, x * 2 + 1) = r | g << 8 | b << 16;
-
-			count++;
-		}
+		const u32 line = m_display_base / 4 + y * 640;
+		for (int x = cliprect.min_x; x <= cliprect.max_x; x++)
+			bitmap.pix(y, x) = (line + x < words) ? (vram[line + x] & 0xffffff) : 0;
 	}
 #endif
 
@@ -348,7 +448,7 @@ void aristmk6_state::irqen_w(offs_t offset, uint8_t data)
 		break;
 	case 0x0118 - 0x0108:
 		irl2en = data;
-		irl2pend &= ~data;
+		irl2pend = (irl2pend & ~data) | m_uart_irq;
 		testIrq();
 		break;
 	case 0x0120 - 0x0108:
@@ -375,14 +475,96 @@ uint8_t aristmk6_state::test_r(offs_t offset)
 	case 0:
 		flip ^= 2;
 		// bit 1 read in various places, status for something...
-		return flip;
+		// bit 0 = CC-62 coin acceptor alarm line, idles high
+		return flip | 1;
 	case 1:
-		return (m_eeprom0->do_read() << 5);
+		// bits 0-4 = key switches (active low), bit 5 = EEPROM data out
+		return (m_keys->read() & ~0x20) | (m_eeprom0->do_read() << 5);
+	case 2:
+		// main door optical loop: the strobe comes back while the door is closed
+		return BIT(m_doors->read(), 4) ? m_door_strobe : 0;
+	case 3:
+		return m_doors->read();
+	case 4:
+		return 0;
+	case 5:
+		{
+			// CC-62 coin acceptor: bit 0 optic, bit 2 sense, bit 3 credit, all idle high
+			// a coin is a sense pulse followed by a credit pulse
+			u8 lines = 0x0d;
+			if (m_coin_time != attotime::never)
+			{
+				const double ms = (machine().time() - m_coin_time).as_double() * 1000.0;
+				if (ms < 20.0)
+					lines &= ~0x04;
+				else if (ms >= 30.0 && ms < 50.0)
+					lines &= ~0x08;
+				else if (ms >= 60.0)
+					m_coin_time = attotime::never;
+			}
+			return lines;
+		}
 	default:
 		logerror("Unmapped read %08x\n", 0x13800000 + offset);
 	}
 
 	return 0;
+}
+
+/*
+    SPI bus to the I/O boards (spi.c). Writing the channel number starts a frame, each write to the data
+    register shifts one byte and raises IRL1 bit 0 when done; the handler reads the received byte and
+    sends the next one. The boards behave as shift registers: a frame returns the bytes sent in the
+    previous frame on that channel, inverted on channel 0 (loop-back). The BIOS checks this in a
+    four-frame self-test per channel at start-up. After it, the first two bytes on channel 4 are the
+    player buttons, high byte first.
+*/
+
+uint8_t aristmk6_state::spi_data_r()
+{
+	if (!machine().side_effects_disabled())
+	{
+		irl1pend &= ~0x01;
+		testIrq();
+	}
+	return m_spi_rx;
+}
+
+void aristmk6_state::spi_data_w(uint8_t data)
+{
+	const int ch = m_spi_channel;
+	const int pos = m_spi_pos;
+	u8 rx = 0;
+	if (pos < 0x14)
+	{
+		m_spi_tx[ch][pos] = data;
+		if (ch == 0)
+			rx = ~m_spi_prev[ch][pos];
+		else if (m_spi_frames[ch] <= 4)
+			rx = m_spi_prev[ch][pos];
+		else if (ch == 2)
+			rx = 0xff;      // mechanical meter sense: 1 = connected
+		else if (ch == 4 && pos < 2)
+			rx = m_buttons->read() >> ((1 - pos) * 8);  // the BIOS fills its 3 byte buffer top down
+		m_spi_pos++;
+	}
+	m_spi_rx = rx;
+	m_spi_timer->adjust(attotime::from_usec(20));
+}
+
+void aristmk6_state::spi_channel_w(uint8_t data)
+{
+	m_spi_channel = data & 7;
+	m_spi_pos = 0;
+	memcpy(m_spi_prev[m_spi_channel], m_spi_tx[m_spi_channel], sizeof(m_spi_prev[0]));
+	if (m_spi_frames[m_spi_channel] != 0xff)
+		m_spi_frames[m_spi_channel]++;
+}
+
+TIMER_CALLBACK_MEMBER(aristmk6_state::spi_done)
+{
+	irl1pend |= 0x01;
+	testIrq();
 }
 
 void aristmk6_state::eeprom_w(uint64_t data)
@@ -401,27 +583,522 @@ uint64_t aristmk6_state::hwver_r()
 	return 0;
 }
 
+/*
+    PLX PCI9054, local side at 0x13000000
+
+    The BIOS uses it as a PCI host bridge in direct-master mode:
+    0x04/0x06  PCICR / PCISR (status bits 0xf900 checked after each configuration cycle, write-1-to-clear)
+    0x8d       LMISC1
+    0x9c       DMRR    direct-master range (0xfc000000 = 64MB)
+    0xa0       DMLBAM  local base for direct-master memory (0x04000000)
+    0xa4       DMLBAI  local base for direct-master I/O / configuration
+    0xa8       DMPBAM  PCI base remap for direct-master memory
+    0xac       DMCFGA  0x80000000 | device << 11 | register: next window access is a configuration cycle
+    The direct-master I/O and configuration window is at 0x13c00000.
+*/
+
+uint32_t aristmk6_state::plx_r(offs_t offset, uint32_t mem_mask)
+{
+	return m_plx_regs[offset & 0x3f];
+}
+
+void aristmk6_state::plx_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	offset &= 0x3f;
+	if (offset == 0x04 / 4 && ACCESSING_BITS_16_31)
+	{
+		// PCISR: write 1 to clear
+		const u32 clear = data & mem_mask & 0xffff0000;
+		m_plx_regs[offset] &= ~clear;
+		mem_mask &= 0x0000ffff;
+	}
+	COMBINE_DATA(&m_plx_regs[offset]);
+}
+
+uint32_t aristmk6_state::pci_window_r(offs_t offset, uint32_t mem_mask)
+{
+	const u32 dmcfga = m_plx_regs[0xac / 4];
+	if (BIT(dmcfga, 31))
+	{
+		// configuration cycle
+		const int device = (dmcfga >> 11) & 0x1f;
+		const int reg = dmcfga & 0xfc;
+		if (((dmcfga >> 16) & 0xff) == 0 && device == 12)
+			return pmx_cfg_r(reg);
+		m_plx_regs[0x04 / 4] |= 0x20000000;   // PCISR: received master abort (empty slot)
+		return 0xffffffff;
+	}
+
+	// I/O space: PMX1 BAR4 register block
+	const u32 io = offset * 4;
+	const u32 bar4 = m_pmx_cfg[0x20 / 4] & 0xffffff00;
+	if (io >= bar4 && io < bar4 + 0x100)
+		return pmx_reg_r((io - bar4) / 4, mem_mask);
+	logerror("PCI I/O read %08x\n", io);
+	return 0;
+}
+
+void aristmk6_state::pci_window_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	const u32 dmcfga = m_plx_regs[0xac / 4];
+	if (BIT(dmcfga, 31))
+	{
+		const int device = (dmcfga >> 11) & 0x1f;
+		const int reg = dmcfga & 0xfc;
+		if (((dmcfga >> 16) & 0xff) == 0 && device == 12)
+			pmx_cfg_w(reg, data, mem_mask);
+		else
+			m_plx_regs[0x04 / 4] |= 0x20000000;
+		return;
+	}
+
+	const u32 io = offset * 4;
+	const u32 bar4 = m_pmx_cfg[0x20 / 4] & 0xffffff00;
+	if (io >= bar4 && io < bar4 + 0x100)
+		pmx_reg_w((io - bar4) / 4, data, mem_mask);
+	else
+		logerror("PCI I/O write %08x = %08x & %08x\n", io, data, mem_mask);
+}
+
+/*
+    NEC PowerVR PMX1 (as on the VideoLogic/NEC Neon 250), PCI slot 12
+
+    Configuration space: BAR0 = 32MB framebuffer memory (the BIOS places it at PCI 0x04000000, which the
+    PLX direct-master window maps to CPU 0x04000000); BAR4 = 256-byte I/O register block; register 0x70 is
+    written serially by the BIOS to program the PLL (14.31818MHz reference).
+*/
+
+uint32_t aristmk6_state::pmx_cfg_r(int reg)
+{
+	return m_pmx_cfg[(reg & 0xff) / 4];
+}
+
+void aristmk6_state::pmx_cfg_w(int reg, uint32_t data, uint32_t mem_mask)
+{
+	reg = (reg & 0xff) / 4;
+	switch (reg)
+	{
+	case 0x00 / 4: case 0x08 / 4:   // read-only IDs / class
+		break;
+	case 0x10 / 4:   // BAR0: 32MB memory
+		COMBINE_DATA(&m_pmx_cfg[reg]);
+		m_pmx_cfg[reg] &= 0xfe000000;
+		break;
+	case 0x14 / 4: case 0x18 / 4: case 0x1c / 4:   // further memory BARs, 64MB each (unused by the BIOS)
+		COMBINE_DATA(&m_pmx_cfg[reg]);
+		m_pmx_cfg[reg] &= 0xfc000000;
+		break;
+	case 0x20 / 4:   // BAR4: 256 bytes of I/O
+		COMBINE_DATA(&m_pmx_cfg[reg]);
+		m_pmx_cfg[reg] = (m_pmx_cfg[reg] & 0xffffff00) | 1;
+		break;
+	default:
+		COMBINE_DATA(&m_pmx_cfg[reg]);
+		break;
+	}
+}
+
+/*
+    PMX1 I/O registers (BAR4), as used by the MK6 BIOS (pmx1.c) and matching src/mame/gaelco/atvtrack.cpp:
+    0x00       start the embedded microcode processor (1)
+    0x40/0x44  boot code address - 4, low / high 16 bits
+    0x70       interrupt pending, write 1 to acknowledge
+    0x74       interrupt mask
+    0xa4       control (0x4000 = reset)
+    0xb0/0xb4/0xbc  doorbells for the BG0 / VIN / DAC command channels (0x8001 = command queued)
+    0xc0       indexed register port: (index | 0x4400) << 16 | value = write, (index | 0x400) << 16 = read
+    0xc8       indexed register status: index << 16 | value of the last access
+*/
+
+uint32_t aristmk6_state::pmx_reg_r(offs_t reg, uint32_t mem_mask)
+{
+	reg &= 0x3f;
+	if (reg == 0xc8 / 4)
+		return m_pmx_idx_status;
+	return m_pmx_regs[reg];
+}
+
+void aristmk6_state::pmx_reg_w(offs_t reg, uint32_t data, uint32_t mem_mask)
+{
+	reg &= 0x3f;
+
+	if (reg == 0x70 / 4)
+	{
+		// interrupt acknowledge: write 1 to clear
+		m_pmx_regs[reg] &= ~(data & mem_mask);
+		pmx_update_irq();
+		return;
+	}
+
+	COMBINE_DATA(&m_pmx_regs[reg]);
+
+	switch (reg)
+	{
+	case 0x00 / 4:
+		if (m_pmx_regs[reg] & 0xffff)
+			pmx_start_microcode();
+		break;
+
+	case 0x74 / 4:
+		pmx_update_irq();
+		break;
+
+	case 0xb0 / 4:
+		if (m_pmx_regs[reg] == 0x8001)
+			pmx_doorbell();         // synchronous command queued on the BG0 channel
+		else
+			pmx_process_fifo();     // asynchronous ring kick
+		break;
+
+	case 0xc0 / 4:
+		{
+			const u32 value = m_pmx_regs[reg];
+			const u32 index = (value >> 16) & 0x3ff;
+			if (BIT(value, 30))   // write
+				m_pmx_idx[index] = value & 0xffff;
+			m_pmx_idx_status = (index << 16) | m_pmx_idx[index];
+		}
+		break;
+	}
+}
+
+/*
+    High-level stand-in for the PMX1's embedded microcode processor (threads BG0, VIN, TV, DAC). The
+    microcode itself is not emulated, only the contract with the BIOS (pmx1.c):
+
+    Boot: the host writes 0x55aa to BG0Data.CIFCtl[0] in VRAM, starts the processor and waits for 1.
+    Commands: each channel control block holds a linked list of ComIF blocks in VRAM
+      +0x00 microcode routine   +0x04 completion word (host 0, microcode 1)
+      +0x18 next (PMX address)  +0x1c next (host address)   +0x20 BG0.DeleteComIF: block to unlink
+    A delete command is the block itself; the microcode unlinks it from the list.
+    Asynchronous ring: packets (word 0 = size rounded up to 64 bytes, word 1 = microcode routine).
+    Control block in VRAM: +0x00 read offset, +0x80/+0x84 blit retire counters, +0x88 flip "shown"
+    counter (checked by the vblank ISR before it retires a flip), +0x8c fence flag.
+
+    The BIOS keeps the write offset in main RAM. Its device block holds, in order, the ring base, the
+    pointer to the write offset, the pointer to the control block and the kick register address; the
+    block is found by searching for the last two on the first kick.
+
+    TODO: ring and routine addresses are fixed: they match the one microcode revision seen so far (BIOS
+    us1 and setchip 06.03.04). Derive them from the microcode symbol tables for other revisions.
+*/
+
+static constexpr u32 PMX_ASYNC_CTRL   = 0x0425d000;
+static constexpr u32 PMX_ASYNC_RING   = 0x0425e000;
+static constexpr u32 PMX_KICK_ADDR    = 0x03c000b0;   // async kick register, as the BIOS addresses it
+static constexpr u32 PMX_ROUTINE_FLIP = 0x04278ff0;
+static constexpr u32 PMX_ROUTINE_BLTA = 0x0427b624;   // opaque blit
+static constexpr u32 PMX_ROUTINE_BLTB = 0x04279110;   // blit, source 0 transparent
+static constexpr u32 PMX_ROUTINE_FILL = 0x04278534;   // solid rectangle
+static constexpr u32 PMX_ROUTINE_TEXT = 0x04273454;   // string of 1bpp glyphs
+
+u32 aristmk6_state::pmx_mem_r(u32 addr) const
+{
+	const u32 offset = (addr & 0x1fffffff) - 0x04000000;
+	return (offset < m_vram.bytes()) ? reinterpret_cast<const u32 *>(&m_vram[0])[offset / 4] : 0;
+}
+
+void aristmk6_state::pmx_mem_w(u32 addr, u32 data)
+{
+	const u32 offset = (addr & 0x1fffffff) - 0x04000000;
+	if (offset < m_vram.bytes())
+		reinterpret_cast<u32 *>(&m_vram[0])[offset / 4] = data;
+}
+
+void aristmk6_state::pmx_start_microcode()
+{
+	// the handshake word sits in the microcode data area at the top of VRAM
+	const u32 *const vram = reinterpret_cast<const u32 *>(&m_vram[0]);
+	for (int i = m_vram.bytes() / 4 - 1; i >= 0; i--)
+	{
+		if (vram[i] == 0x000055aa)
+		{
+			m_cif_bg0 = 0x04000000 + i * 4;
+			m_async_woff = 0;
+			pmx_mem_w(m_cif_bg0, 1);
+			logerror("PMX1: microcode started, BG0 control block at %08x\n", m_cif_bg0);
+			return;
+		}
+	}
+	logerror("PMX1: microcode started, handshake word not found\n");
+}
+
+void aristmk6_state::pmx_doorbell()
+{
+	if (m_cif_bg0 == 0)
+		return;
+
+	u32 prev = 0;
+	u32 cif = pmx_mem_r(m_cif_bg0 + 4);
+	for (int count = 0; cif != 0 && count < 256; count++)
+	{
+		const u32 next = pmx_mem_r(cif + 0x1c);
+		if (pmx_mem_r(cif + 0x00) != 0 && pmx_mem_r(cif + 0x04) == 0)
+		{
+			if (prev != 0 && (pmx_mem_r(cif + 0x20) & 0x1fffffff) == (cif & 0x1fffffff))
+			{
+				// BG0.DeleteComIF
+				pmx_mem_w(prev + 0x1c, next);
+				pmx_mem_w(prev + 0x18, pmx_mem_r(cif + 0x18));
+				pmx_mem_w(cif + 0x20, 0);
+				pmx_mem_w(cif + 0x04, 1);
+				cif = next;
+				continue;
+			}
+			pmx_mem_w(cif + 0x04, 1);
+		}
+		prev = cif;
+		cif = next;
+	}
+}
+
+void aristmk6_state::pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0)
+{
+	const u32 bytes = m_vram.bytes();
+	const u32 soffs = (src & 0x1fffffff) - 0x04000000 + (sy * spitch + sx) * 4;
+	const u32 doffs = (dst & 0x1fffffff) - 0x04000000 + (dy * dpitch + dx) * 4;
+	if (w <= 0 || h <= 0 || spitch <= 0 || dpitch <= 0)
+		return;
+	if (u64(soffs) + u64((h - 1) * spitch + w) * 4 > bytes || u64(doffs) + u64((h - 1) * dpitch + w) * 4 > bytes)
+	{
+		logerror("PMX1: blit out of range src %08x dst %08x %dx%d\n", src, dst, w, h);
+		return;
+	}
+
+	const u32 *s = reinterpret_cast<const u32 *>(&m_vram[0]) + soffs / 4;
+	u32 *d = reinterpret_cast<u32 *>(&m_vram[0]) + doffs / 4;
+	for (int y = 0; y < h; y++, s += spitch, d += dpitch)
+	{
+		for (int x = 0; x < w; x++)
+		{
+			if (!key0 || s[x] != 0)
+				d[x] = s[x];
+		}
+	}
+}
+
+void aristmk6_state::pmx_fill(u32 dst, int dx, int dy, int dpitch, int w, int h, u32 color)
+{
+	const u32 doffs = (dst & 0x1fffffff) - 0x04000000 + (dy * dpitch + dx) * 4;
+	if (w <= 0 || h <= 0 || dpitch <= 0 || u64(doffs) + u64((h - 1) * dpitch + w) * 4 > m_vram.bytes())
+	{
+		logerror("PMX1: fill out of range dst %08x %dx%d\n", dst, w, h);
+		return;
+	}
+
+	u32 *d = reinterpret_cast<u32 *>(&m_vram[0]) + doffs / 4;
+	for (int y = 0; y < h; y++, d += dpitch)
+		std::fill_n(d, w, color);
+}
+
+/*
+    Text packet: +0x08 destination, +0x0c pitch in bytes << 1 | 1, +0x10 y << 16 | x, +0x14 glyph count,
+    +0x1c clip height << 16 | width, +0x20 foreground, +0x24 background, then (glyph, advance) pairs.
+    A glyph is 2 bytes of padding, width, height and 4 bytes of flags, then 1bpp rows, MSB left. The
+    BIOS fills the background first, so only foreground pixels are drawn here.
+*/
+void aristmk6_state::pmx_text(u32 pkt)
+{
+	const u32 dst = pmx_mem_r(pkt + 0x08);
+	const int pitch = pmx_mem_r(pkt + 0x0c) >> 3;
+	const u32 pos = pmx_mem_r(pkt + 0x10);
+	const u32 count = pmx_mem_r(pkt + 0x14);
+	const u32 clip = pmx_mem_r(pkt + 0x1c);
+	const u32 color = pmx_mem_r(pkt + 0x20);
+	const int clipw = clip & 0xffff;
+	const int cliph = clip >> 16;
+	const u8 *const vram = reinterpret_cast<const u8 *>(&m_vram[0]);
+	u32 *const fb = reinterpret_cast<u32 *>(&m_vram[0]);
+	const u32 base = ((dst & 0x1fffffff) - 0x04000000) / 4;
+	if (pitch <= 0 || pitch > 4096)
+		return;
+
+	int x = pos & 0xffff;
+	const int y = pos >> 16;
+	for (u32 i = 0; i < count && i < 0x200; i++)
+	{
+		const u32 glyph = (pmx_mem_r(pkt + 0x28 + i * 8) & 0x1fffffff) - 0x04000000;
+		const u32 advance = pmx_mem_r(pkt + 0x2c + i * 8);
+		if (glyph + 8 < m_vram.bytes())
+		{
+			const int gw = vram[glyph + 2];
+			const int gh = vram[glyph + 3];
+			const int rowbytes = (gw + 7) / 8;
+			if (glyph + 8 + gh * rowbytes <= m_vram.bytes())
+			{
+				for (int gy = 0; gy < gh; gy++)
+				{
+					const u8 *const row = &vram[glyph + 8 + gy * rowbytes];
+					const int py = y + gy;
+					for (int gx = 0; gx < gw; gx++)
+					{
+						const int px = x + gx;
+						const u32 offs = base + py * pitch + px;
+						if (BIT(row[gx >> 3], 7 - (gx & 7)) && px < clipw && py < cliph && offs < m_vram.bytes() / 4)
+							fb[offs] = color;
+					}
+				}
+			}
+		}
+		x += advance;
+	}
+}
+
+void aristmk6_state::pmx_process_fifo()
+{
+	if (m_async_woff == 0)
+	{
+		if (m_pmx_regs[0xb0 / 4] == 0)
+			return;
+		const u32 *const ram = reinterpret_cast<const u32 *>(&m_mainram[0]);
+		for (u32 i = 1; i < m_mainram.bytes() / 4 - 1; i++)
+		{
+			if (ram[i] == PMX_ASYNC_CTRL && ram[i + 1] == PMX_KICK_ADDR)
+			{
+				m_async_woff = ram[i - 1];
+				logerror("PMX1: async write offset at %08x\n", m_async_woff);
+				break;
+			}
+		}
+		if (m_async_woff == 0)
+			return;
+	}
+
+	const u32 write = m_maincpu->space(AS_PROGRAM).read_dword(m_async_woff) & 0xffff;
+	u32 read = pmx_mem_r(PMX_ASYNC_CTRL) & 0xffff;
+
+	for (int count = 0; read != write && count < 4096; count++)
+	{
+		const u32 pkt = PMX_ASYNC_RING + read;
+		const u32 size = pmx_mem_r(pkt);
+		const u32 routine = pmx_mem_r(pkt + 4);
+		if (size < 8 || size > 0x1000)
+		{
+			logerror("PMX1: bad ring packet at %04x, size %x\n", read, size);
+			read = write;
+			break;
+		}
+
+		const auto w = [this, pkt] (int i) { return pmx_mem_r(pkt + i * 4); };
+		if (size == 0x14)
+		{
+			// fence: everything queued before it has been executed
+			pmx_mem_w(PMX_ASYNC_CTRL + 0x8c, 1);
+			read = (read + 0x40) & 0xffff;
+			continue;
+		}
+
+		switch (routine)
+		{
+		case PMX_ROUTINE_BLTB:
+			pmx_blit(w(8), w(12) >> 16, w(13) & 0xffff, w(11) >> 16,
+					w(9), w(10) & 0xffff, w(13) >> 16, w(11) & 0xffff,
+					w(10) >> 16, w(12) & 0xffff, true);
+			pmx_mem_w(w(15), w(14));
+			pmx_mem_w(w(17), w(16));
+			break;
+
+		case PMX_ROUTINE_BLTA:
+			pmx_blit(w(2), 0, w(5) & 0xffff, w(7) >> 16,
+					w(3), w(6) & 0xffff, w(5) >> 16, w(7) & 0xffff,
+					w(6) >> 16, w(4), false);
+			pmx_mem_w(w(13), w(12));
+			pmx_mem_w(w(15), w(14));
+			break;
+
+		case PMX_ROUTINE_FILL:
+			pmx_fill(w(2), w(4) >> 16, w(4) & 0xffff, (w(3) >> 16) / 4, w(5) >> 16, w(5) & 0xffff, w(7));
+			break;
+
+		case PMX_ROUTINE_TEXT:
+			pmx_text(pkt);
+			break;
+
+		case PMX_ROUTINE_FLIP:
+			// word 2 selects the page: 0 or 0x100, the BIOS framebuffers are consecutive
+			m_display_base = BIT(w(2), 8) ? 640 * 480 * 4 : 0;
+			pmx_mem_w(w(7), w(6));
+			break;
+
+		default:
+			logerror("PMX1: unhandled routine %08x size %x\n", routine, size);
+			break;
+		}
+
+		read = (read + ((size + 63) & ~63)) & 0xffff;
+	}
+
+	pmx_mem_w(PMX_ASYNC_CTRL, read);
+}
+
+void aristmk6_state::pmx_update_irq()
+{
+	// PMX1 interrupt reaches the FPGA on the PCI slot 12 line: IRL3, slot 0x19, pending bit 1
+	if (m_pmx_regs[0x70 / 4] & ~m_pmx_regs[0x74 / 4] & 0xffff)
+		irl3pend0 |= 0x02;
+	else
+		irl3pend0 &= ~0x02;
+	testIrq();
+}
+
+template <int N>
+void aristmk6_state::uart_int_w(int state)
+{
+	if (state)
+		m_uart_irq |= 1 << N;
+	else
+		m_uart_irq &= ~(1 << N);
+	irl2pend = (irl2pend & ~(1 << N)) | (m_uart_irq & (1 << N));
+	testIrq();
+}
+
+INPUT_CHANGED_MEMBER(aristmk6_state::coin_inserted)
+{
+	if (newval)
+		m_coin_time = machine().time();
+}
+
+void aristmk6_state::vblank_w(int state)
+{
+	if (state)
+	{
+		pmx_process_fifo();
+		m_pmx_regs[0x70 / 4] |= 0x04;
+		pmx_update_irq();
+	}
+}
+
 void aristmk6_state::aristmk6_map(address_map &map)
 {
 	map(0x00000000, 0x003fffff).rom().region("maincpu", 0);
 	map(0x04000000, 0x05ffffff).ram().share("vram"); // VRAM 32MB
 	map(0x08000000, 0x0bffffff).rom().region("game_rom", 0);
-	map(0x0c000000, 0x0cffffff).ram(); // Main RAM 16MB
-	map(0x10800000, 0x1087ffff).ram(); // SRAM0 512KB
-	map(0x11000000, 0x1107ffff).ram(); // SRAM1 512KB
-	map(0x11800000, 0x1187ffff).ram(); // SRAM2 512KB
+	map(0x0c000000, 0x0cffffff).ram().share("mainram"); // Main RAM 16MB
+	map(0x10800000, 0x1087ffff).ram().share("sram0"); // SRAM0 512KB
+	map(0x11000000, 0x1107ffff).ram().share("sram1"); // SRAM1 512KB
+	map(0x11800000, 0x1187ffff).ram().share("sram2"); // SRAM2 512KB
 // 12000xxx main control registers area
 //  map(0x12000000, another eeprom or SPI bus
 	map(0x12000010, 0x12000017).w(FUNC(aristmk6_state::eeprom_w));
+	map(0x12000018, 0x1200001f).rw(FUNC(aristmk6_state::spi_data_r), FUNC(aristmk6_state::spi_data_w)).umask64(0x00000000000000ff);
+	map(0x12000020, 0x12000027).w(FUNC(aristmk6_state::spi_channel_w)).umask64(0x00000000000000ff);
+	map(0x12000028, 0x1200002f).nopw(); // SPI control: 0, then 3 at start-up
+	map(0x12000050, 0x12000057).lw8(NAME([this] (u8 data) { m_door_strobe = data & 1; }));
+	map(0x12000060, 0x12000067).nopw(); // door latch reset pulse
 	map(0x12000078, 0x1200007f).nopw(); // watchdog ??
 	map(0x12000080, 0x12000087).nopw(); // 0-1-2 written here repeatedly, diag LED or smth ?
 	map(0x120000e0, 0x120000e7).r(FUNC(aristmk6_state::hwver_r));
 	map(0x120000e8, 0x12000107).r(FUNC(aristmk6_state::irqpend_r));
 	map(0x12000108, 0x12000127).w(FUNC(aristmk6_state::irqen_w));
+	map(0x12400000, 0x12400007).rw(m_uart3, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
+	map(0x12400008, 0x1240000f).rw(m_uart2, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
 	map(0x12400010, 0x12400017).rw(m_uart1, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
 	map(0x12400018, 0x1240001f).rw(m_uart0, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
-//  map(0x13000000 MMIO space for PLX9054?
+	map(0x13000000, 0x130000ff).rw(FUNC(aristmk6_state::plx_r), FUNC(aristmk6_state::plx_w));
 	map(0x13800000, 0x13800007).r(FUNC(aristmk6_state::test_r));
+	map(0x13c00000, 0x13c0ffff).rw(FUNC(aristmk6_state::pci_window_r), FUNC(aristmk6_state::pci_window_w));
+	// the BIOS also reaches the window through 0x03c00000 (its PCI-to-CPU address translation masks to 26 bits)
+	map(0x03c00000, 0x03c0ffff).rw(FUNC(aristmk6_state::pci_window_r), FUNC(aristmk6_state::pci_window_w));
 }
 
 void aristmk6_state::aristmk6_port(address_map &map)
@@ -429,6 +1106,43 @@ void aristmk6_state::aristmk6_port(address_map &map)
 }
 
 static INPUT_PORTS_START( aristmk6 )
+	PORT_START("KEYS") // port 1: key switches, active low; bit 5 is the EEPROM data line
+	PORT_BIT( 0x01, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Jackpot Key") PORT_CODE(KEYCODE_J) PORT_TOGGLE
+	PORT_BIT( 0x02, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Operator Key") PORT_CODE(KEYCODE_O) PORT_TOGGLE
+	PORT_BIT( 0x04, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Operator Key 2") PORT_CODE(KEYCODE_K) PORT_TOGGLE
+	PORT_BIT( 0x08, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Operator Key 3") PORT_CODE(KEYCODE_L) PORT_TOGGLE
+	PORT_BIT( 0x10, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Operator Key 4") PORT_CODE(KEYCODE_COLON) PORT_TOGGLE
+	PORT_BIT( 0xe0, IP_ACTIVE_LOW, IPT_UNUSED )
+
+	PORT_START("DOORS") // port 3: door switches, 1 = closed except for the logic door
+	PORT_BIT( 0x01, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Logic Door") PORT_CODE(KEYCODE_Z) PORT_TOGGLE
+	PORT_BIT( 0x02, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Top Box Door") PORT_CODE(KEYCODE_X) PORT_TOGGLE
+	PORT_BIT( 0x04, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Mech Meter Door") PORT_CODE(KEYCODE_V) PORT_TOGGLE
+	PORT_BIT( 0x08, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Cash Box Door") PORT_CODE(KEYCODE_B) PORT_TOGGLE
+	PORT_BIT( 0x10, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Main Door") PORT_CODE(KEYCODE_M) PORT_TOGGLE
+	PORT_BIT( 0x20, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Note Acceptor Door") PORT_CODE(KEYCODE_N) PORT_TOGGLE
+	PORT_BIT( 0xc0, IP_ACTIVE_HIGH, IPT_UNUSED )
+
+	PORT_START("COIN")
+	PORT_BIT( 0x01, IP_ACTIVE_HIGH, IPT_COIN1 ) PORT_CHANGED_MEMBER(DEVICE_SELF, FUNC(aristmk6_state::coin_inserted), 0)
+
+	PORT_START("BUTTONS") // SPI channel 4 bytes 1-2: player panel, bit meanings not mapped yet
+	PORT_BIT( 0x0001, IP_ACTIVE_HIGH, IPT_BUTTON1 ) PORT_NAME("Panel 0") PORT_CODE(KEYCODE_C)
+	PORT_BIT( 0x0002, IP_ACTIVE_HIGH, IPT_BUTTON2 ) PORT_NAME("Panel 1") PORT_CODE(KEYCODE_D)
+	PORT_BIT( 0x0004, IP_ACTIVE_HIGH, IPT_BUTTON3 ) PORT_NAME("Panel 2") PORT_CODE(KEYCODE_F)
+	PORT_BIT( 0x0008, IP_ACTIVE_HIGH, IPT_BUTTON4 ) PORT_NAME("Panel 3") PORT_CODE(KEYCODE_U)
+	PORT_BIT( 0x0010, IP_ACTIVE_HIGH, IPT_BUTTON5 ) PORT_NAME("Panel 4") PORT_CODE(KEYCODE_Y)
+	PORT_BIT( 0x0020, IP_ACTIVE_HIGH, IPT_BUTTON6 ) PORT_NAME("Panel 5") PORT_CODE(KEYCODE_G)
+	PORT_BIT( 0x0040, IP_ACTIVE_HIGH, IPT_BUTTON7 ) PORT_NAME("Panel 6") PORT_CODE(KEYCODE_H)
+	PORT_BIT( 0x0080, IP_ACTIVE_HIGH, IPT_BUTTON8 ) PORT_NAME("Panel 7") PORT_CODE(KEYCODE_I)
+	PORT_BIT( 0x0100, IP_ACTIVE_HIGH, IPT_BUTTON9 ) PORT_NAME("Panel 8") PORT_CODE(KEYCODE_P)
+	PORT_BIT( 0x0200, IP_ACTIVE_HIGH, IPT_BUTTON10 ) PORT_NAME("Panel 9") PORT_CODE(KEYCODE_SPACE)
+	PORT_BIT( 0x0400, IP_ACTIVE_HIGH, IPT_BUTTON11 ) PORT_NAME("Panel 10") PORT_CODE(KEYCODE_T)
+	PORT_BIT( 0x0800, IP_ACTIVE_HIGH, IPT_BUTTON12 ) PORT_NAME("Panel 11") PORT_CODE(KEYCODE_R)
+	PORT_BIT( 0x1000, IP_ACTIVE_HIGH, IPT_BUTTON13 ) PORT_NAME("Panel 12") PORT_CODE(KEYCODE_E)
+	PORT_BIT( 0x2000, IP_ACTIVE_HIGH, IPT_BUTTON14 ) PORT_NAME("Panel 13") PORT_CODE(KEYCODE_W)
+	PORT_BIT( 0x4000, IP_ACTIVE_HIGH, IPT_BUTTON15 ) PORT_NAME("Panel 14") PORT_CODE(KEYCODE_Q)
+	PORT_BIT( 0x8000, IP_ACTIVE_HIGH, IPT_BUTTON16 ) PORT_NAME("Panel 15") PORT_CODE(KEYCODE_S)
 INPUT_PORTS_END
 
 // ?
@@ -452,13 +1166,24 @@ void aristmk6_state::aristmk6(machine_config &config)
 	m_maincpu->set_addrmap(AS_PROGRAM, &aristmk6_state::aristmk6_map);
 	m_maincpu->set_addrmap(AS_IO, &aristmk6_state::aristmk6_port);
 	m_maincpu->set_mmu_hacktype(2);
-	m_maincpu->set_force_no_drc(true);
 //  m_maincpu->set_disable();
 
-	NS16550(config, "uart0", 8_MHz_XTAL);
-	NS16550(config, "uart1", 8_MHz_XTAL);
+	// BIOS UART numbers 0-3 are at 0x12400000/8/10/18
+	NS16550(config, m_uart0, 8_MHz_XTAL).out_int_callback().set(FUNC(aristmk6_state::uart_int_w<3>));
+	NS16550(config, m_uart1, 8_MHz_XTAL).out_int_callback().set(FUNC(aristmk6_state::uart_int_w<2>));
+	NS16550(config, m_uart2, 8_MHz_XTAL).out_int_callback().set(FUNC(aristmk6_state::uart_int_w<1>));
+	// touch screen: the BIOS uses divisor 16 then 4, i.e. 2400 then 9600 baud
+	NS16550(config, m_uart3, 614400).out_int_callback().set(FUNC(aristmk6_state::uart_int_w<0>));
+	m_uart3->out_tx_callback().set("microtouch", FUNC(microtouch_device::rx));
+
+	microtouch_device &microtouch(MICROTOUCH(config, "microtouch", 9600));
+	microtouch.stx().set(m_uart3, FUNC(ns16550_device::rx_w));
 
 	EEPROM_93C56_16BIT(config, m_eeprom0).default_value(0xff);
+
+	NVRAM(config, "sram0", nvram_device::DEFAULT_ALL_0);
+	NVRAM(config, "sram1", nvram_device::DEFAULT_ALL_0);
+	NVRAM(config, "sram2", nvram_device::DEFAULT_ALL_0);
 
 	/* video hardware */
 	screen_device &screen(SCREEN(config, "screen"));
@@ -467,6 +1192,7 @@ void aristmk6_state::aristmk6(machine_config &config)
 	screen.set_size(640, 480);
 	screen.set_visarea(0, 640-1, 0, 480-1);
 	screen.set_screen_update(FUNC(aristmk6_state::screen_update));
+	screen.screen_vblank().set(FUNC(aristmk6_state::vblank_w));
 
 	PALETTE(config, m_palette).set_entries(0x1000);
 }
