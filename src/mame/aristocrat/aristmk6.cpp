@@ -475,23 +475,10 @@ uint8_t aristmk6_state::test_r(offs_t offset)
 	case 0:
 		flip ^= 2;
 		// bit 1 read in various places, status for something...
-		// bit 0 = CC-62 coin acceptor alarm line, idles high
-		return flip | 1;
-	case 1:
-		// bits 0-4 = key switches (active low), bit 5 = EEPROM data out
-		return (m_keys->read() & ~0x20) | (m_eeprom0->do_read() << 5);
-	case 2:
-		// main door optical loop: the strobe comes back while the door is closed
-		return BIT(m_doors->read(), 4) ? m_door_strobe : 0;
-	case 3:
-		return m_doors->read();
-	case 4:
-		return 0;
-	case 5:
+		// bits 2-5 = CC-62 coin acceptor sense, credit, alarm, diverter, all idle high
+		// a coin is a sense pulse followed by a credit pulse
 		{
-			// CC-62 coin acceptor: bit 0 optic, bit 2 sense, bit 3 credit, all idle high
-			// a coin is a sense pulse followed by a credit pulse
-			u8 lines = 0x0d;
+			u8 lines = 0x3d;
 			if (m_coin_time != attotime::never)
 			{
 				const double ms = (machine().time() - m_coin_time).as_double() * 1000.0;
@@ -502,8 +489,20 @@ uint8_t aristmk6_state::test_r(offs_t offset)
 				else if (ms >= 60.0)
 					m_coin_time = attotime::never;
 			}
-			return lines;
+			return flip | lines;
 		}
+	case 1:
+		// bits 0-4 = key switches (active low), bit 5 = EEPROM data out
+		return (m_keys->read() & ~0x20) | (m_eeprom0->do_read() << 5);
+	case 2:
+		// main door optical loop: the strobe comes back while the door is closed
+		return BIT(m_doors->read(), 4) ? 0 : m_door_strobe;
+	case 3:
+		return m_doors->read();
+	case 4:
+		return 0;
+	case 5:
+		return 0x0d;
 	default:
 		logerror("Unmapped read %08x\n", 0x13800000 + offset);
 	}
@@ -1114,13 +1113,13 @@ static INPUT_PORTS_START( aristmk6 )
 	PORT_BIT( 0x10, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Operator Key 4") PORT_CODE(KEYCODE_COLON) PORT_TOGGLE
 	PORT_BIT( 0xe0, IP_ACTIVE_LOW, IPT_UNUSED )
 
-	PORT_START("DOORS") // port 3: door switches, 1 = closed except for the logic door
+	PORT_START("DOORS") // port 3: door switches, 1 = open
 	PORT_BIT( 0x01, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Logic Door") PORT_CODE(KEYCODE_Z) PORT_TOGGLE
-	PORT_BIT( 0x02, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Top Box Door") PORT_CODE(KEYCODE_X) PORT_TOGGLE
-	PORT_BIT( 0x04, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Mech Meter Door") PORT_CODE(KEYCODE_V) PORT_TOGGLE
-	PORT_BIT( 0x08, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Cash Box Door") PORT_CODE(KEYCODE_B) PORT_TOGGLE
-	PORT_BIT( 0x10, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Main Door") PORT_CODE(KEYCODE_M) PORT_TOGGLE
-	PORT_BIT( 0x20, IP_ACTIVE_LOW, IPT_OTHER ) PORT_NAME("Note Acceptor Door") PORT_CODE(KEYCODE_N) PORT_TOGGLE
+	PORT_BIT( 0x02, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Top Box Door") PORT_CODE(KEYCODE_X) PORT_TOGGLE
+	PORT_BIT( 0x04, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Mech Meter Door") PORT_CODE(KEYCODE_V) PORT_TOGGLE
+	PORT_BIT( 0x08, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Cash Box Door") PORT_CODE(KEYCODE_B) PORT_TOGGLE
+	PORT_BIT( 0x10, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Main Door") PORT_CODE(KEYCODE_M) PORT_TOGGLE
+	PORT_BIT( 0x20, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Note Acceptor Door") PORT_CODE(KEYCODE_N) PORT_TOGGLE
 	PORT_BIT( 0xc0, IP_ACTIVE_HIGH, IPT_UNUSED )
 
 	PORT_START("COIN")
