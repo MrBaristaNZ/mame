@@ -186,7 +186,7 @@ private:
 	void pmx_start_microcode();
 	void pmx_doorbell();
 	void pmx_process_fifo();
-	void pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0);
+	void pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0, int fade = -1);
 	void pmx_fill(u32 dst, int dx, int dy, int dpitch, int w, int h, u32 color);
 	void pmx_text(u32 pkt);
 	void pmx_line(u32 dst, int pitch, int x0, int y0, int x1, int y1, int clipw, int cliph, u32 color);
@@ -922,7 +922,7 @@ static constexpr u32 PMX_ASYNC_RING   = 0x0425e000;
 static constexpr u32 PMX_KICK_ADDR    = 0x03c000b0;   // async kick register, as the BIOS addresses it
 static constexpr u32 PMX_ROUTINE_FLIP = 0x04278ff0;
 static constexpr u32 PMX_ROUTINE_BLTA = 0x0427b624;   // opaque blit
-static constexpr u32 PMX_ROUTINE_BLTB = 0x04279110;   // blit with per-pixel alpha
+static constexpr u32 PMX_ROUTINE_BLTB = 0x04279110;   // blit with per-pixel alpha; if word 2 bit 1 is set, top byte = fade
 static constexpr u32 PMX_ROUTINE_FILL = 0x04278534;   // solid rectangle
 static constexpr u32 PMX_ROUTINE_TEXT = 0x04273454;   // string of 1bpp glyphs
 static constexpr u32 PMX_ROUTINE_LINE = 0x04276d58;   // one pixel wide line
@@ -989,7 +989,7 @@ void aristmk6_state::pmx_doorbell()
 	}
 }
 
-void aristmk6_state::pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0)
+void aristmk6_state::pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0, int fade)
 {
 	const u32 bytes = m_vram.bytes();
 	const u32 soffs = (src & 0x1fffffff) - 0x04000000 + (sy * spitch + sx) * 4;
@@ -1009,7 +1009,9 @@ void aristmk6_state::pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int 
 		for (int x = 0; x < w; x++)
 		{
 			const u32 src = s[x];
-			const u32 alpha = src >> 24;
+			u32 alpha = src >> 24;
+			if (fade >= 0)
+				alpha = alpha * fade / 255;
 			if (!key0 || alpha == 0xff)
 				d[x] = src;
 			else if (alpha != 0)
@@ -1177,15 +1179,15 @@ void aristmk6_state::pmx_process_fifo()
 		case PMX_ROUTINE_BLTB:
 			pmx_blit(w(8), w(12) >> 16, w(13) & 0xffff, w(11) >> 16,
 					w(9), w(10) & 0xffff, w(13) >> 16, w(11) & 0xffff,
-					w(10) >> 16, w(12) & 0xffff, true);
+					w(10) >> 16, w(12) & 0xffff, true, BIT(w(2), 1) ? int(w(2) >> 24) : -1);
 			pmx_mem_w(w(15), w(14));
 			pmx_mem_w(w(17), w(16));
 			break;
 
 		case PMX_ROUTINE_BLTA:
-			pmx_blit(w(2), 0, w(5) & 0xffff, w(7) >> 16,
+			pmx_blit(w(2), w(4) >> 16, w(5) & 0xffff, w(7) >> 16,
 					w(3), w(6) & 0xffff, w(5) >> 16, w(7) & 0xffff,
-					w(6) >> 16, w(4), false);
+					w(6) >> 16, w(4) & 0xffff, false);
 			pmx_mem_w(w(13), w(12));
 			pmx_mem_w(w(15), w(14));
 			break;
