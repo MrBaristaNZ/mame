@@ -193,6 +193,7 @@ private:
 	void pmx_update_irq();
 	uint8_t codec_r();
 	void codec_w(uint8_t data);
+	void codec_update_volume();
 	TIMER_CALLBACK_MEMBER(audio_tick);
 	template <int N> void uart_int_w(int state);
 	void vblank_w(int state);
@@ -291,10 +292,27 @@ void aristmk6_state::machine_start()
 	for (auto &dac : m_dmadac)
 	{
 		dac->enable(1);
-		dac->set_frequency(5'500'000.0 / 256);
+		dac->set_frequency(getenv("MK6_AUDIO_RATE") ? atof(getenv("MK6_AUDIO_RATE")) : 5'500'000.0 / 256); // temporary: listening test
 		dac->set_volume(0x100);
 	}
 	m_audio_timer = timer_alloc(FUNC(aristmk6_state::audio_tick), this);
+
+	// the touch screen is a player 2 device by default, with keys that clash with the button panel: use the
+	// first mouse or light gun instead
+	for (ioport_field &field : ioport("microtouch:TOUCH_X")->fields())
+	{
+		field.set_defseq(SEQ_TYPE_STANDARD, input_seq(GUNCODE_X_INDEXED(0), input_seq::or_code, MOUSECODE_X_INDEXED(0)));
+		field.set_defseq(SEQ_TYPE_DECREMENT, input_seq());
+		field.set_defseq(SEQ_TYPE_INCREMENT, input_seq());
+	}
+	for (ioport_field &field : ioport("microtouch:TOUCH_Y")->fields())
+	{
+		field.set_defseq(SEQ_TYPE_STANDARD, input_seq(GUNCODE_Y_INDEXED(0), input_seq::or_code, MOUSECODE_Y_INDEXED(0)));
+		field.set_defseq(SEQ_TYPE_DECREMENT, input_seq());
+		field.set_defseq(SEQ_TYPE_INCREMENT, input_seq());
+	}
+	for (ioport_field &field : ioport("microtouch:TOUCH")->fields())
+		field.set_defseq(input_seq(GUNCODE_BUTTON1_INDEXED(0), input_seq::or_code, MOUSECODE_BUTTON1_INDEXED(0)));
 	save_item(NAME(m_coin_time));
 	save_item(NAME(m_spi_tx));
 	save_item(NAME(m_spi_prev));
@@ -330,8 +348,9 @@ void aristmk6_state::machine_reset()
 	m_i2c_out = 3;
 	m_i2c_bit = m_i2c_byte = m_i2c_shift = m_i2c_reg = m_i2c_ack = 0;
 	memset(m_codec_regs, 0, sizeof(m_codec_regs));
+	codec_update_volume();
 	m_audio_channel = 0;
-	const attotime audio_period = attotime::from_ticks(512 * 256, 5'500'000);
+	const attotime audio_period = getenv("MK6_AUDIO_RATE") ? attotime::from_hz(atof(getenv("MK6_AUDIO_RATE"))) * 512 : attotime::from_ticks(512 * 256, 5'500'000); // temporary: listening test
 	m_audio_timer->adjust(audio_period, 0, audio_period);
 
 	std::fill(std::begin(m_pmx_cfg), std::end(m_pmx_cfg), 0);
@@ -643,14 +662,25 @@ void aristmk6_state::codec_w(uint8_t data)
 				m_i2c_reg = m_i2c_shift & 7;
 			else if (m_i2c_byte >= 2)
 			{
-				logerror("codec reg %d = %02x\n", m_i2c_reg, m_i2c_shift);
-				m_codec_regs[m_i2c_reg++ & 7] = m_i2c_shift;
+				const u8 reg = m_i2c_reg++ & 7;
+				m_codec_regs[reg] = m_i2c_shift;
+				if (reg == 3)
+					codec_update_volume();
 			}
 			m_i2c_byte++;
 		}
 	}
 	else if (BIT(old, 1) && !BIT(m_i2c_out, 1))  // clock falls
 		m_i2c_ack = 0;
+}
+
+// register 3: bit 7 mute, bits 0-6 attenuation in dB (the BIOS table runs 0, 1, 2, 3, 4, 6, 8, 10, 14, 20, 90)
+void aristmk6_state::codec_update_volume()
+{
+	const u8 value = m_codec_regs[3];
+	const u16 volume = BIT(value, 7) ? 0 : u16(0x100 * pow(10.0, -double(value & 0x7f) / 20.0) + 0.5);
+	for (auto &dac : m_dmadac)
+		dac->set_volume(volume);
 }
 
 TIMER_CALLBACK_MEMBER(aristmk6_state::audio_tick)
