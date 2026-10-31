@@ -186,6 +186,7 @@ private:
 	void pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0);
 	void pmx_fill(u32 dst, int dx, int dy, int dpitch, int w, int h, u32 color);
 	void pmx_text(u32 pkt);
+	void pmx_line(u32 dst, int pitch, int x0, int y0, int x1, int y1, int clipw, int cliph, u32 color);
 	void pmx_update_irq();
 	template <int N> void uart_int_w(int state);
 	void vblank_w(int state);
@@ -207,6 +208,7 @@ private:
 	u8 irl2pend = 0, irl2en = 0;    // UARTs: BIOS UART numbers 0-3 = bits 0-3
 	u8 m_uart_irq = 0;
 	u8 m_door_strobe = 0;
+	u8 m_diverter = 0;
 	attotime m_coin_time = attotime::never;
 	u8 irl3pend0 = 0, irl3en0 = 0;
 	u8 irl3pend1 = 0, irl3en1 = 0;
@@ -261,6 +263,7 @@ void aristmk6_state::machine_start()
 	save_item(NAME(m_async_woff));
 	save_item(NAME(m_uart_irq));
 	save_item(NAME(m_door_strobe));
+	save_item(NAME(m_diverter));
 	save_item(NAME(m_coin_time));
 	save_item(NAME(m_spi_tx));
 	save_item(NAME(m_spi_prev));
@@ -475,10 +478,10 @@ uint8_t aristmk6_state::test_r(offs_t offset)
 	case 0:
 		flip ^= 2;
 		// bit 1 read in various places, status for something...
-		// bits 2-5 = CC-62 coin acceptor sense, credit, alarm, diverter, all idle high
+		// bits 2-4 = CC-62 coin acceptor sense, credit, alarm, idle high; bit 5 = diverter position
 		// a coin is a sense pulse followed by a credit pulse
 		{
-			u8 lines = 0x3d;
+			u8 lines = 0x1d | (m_diverter << 5);
 			if (m_coin_time != attotime::never)
 			{
 				const double ms = (machine().time() - m_coin_time).as_double() * 1000.0;
@@ -542,7 +545,7 @@ void aristmk6_state::spi_data_w(uint8_t data)
 		else if (m_spi_frames[ch] <= 4)
 			rx = m_spi_prev[ch][pos];
 		else if (ch == 2)
-			rx = 0xff;      // mechanical meter sense: 1 = connected
+			rx = data;      // mechanical meters: 0 drives a coil, the sense line follows the drive
 		else if (ch == 4 && pos < 2)
 			rx = m_buttons->read() >> ((1 - pos) * 8);  // the BIOS fills its 3 byte buffer top down
 		m_spi_pos++;
@@ -787,9 +790,12 @@ static constexpr u32 PMX_ASYNC_RING   = 0x0425e000;
 static constexpr u32 PMX_KICK_ADDR    = 0x03c000b0;   // async kick register, as the BIOS addresses it
 static constexpr u32 PMX_ROUTINE_FLIP = 0x04278ff0;
 static constexpr u32 PMX_ROUTINE_BLTA = 0x0427b624;   // opaque blit
-static constexpr u32 PMX_ROUTINE_BLTB = 0x04279110;   // blit, source 0 transparent
+static constexpr u32 PMX_ROUTINE_BLTB = 0x04279110;   // blit with per-pixel alpha
 static constexpr u32 PMX_ROUTINE_FILL = 0x04278534;   // solid rectangle
 static constexpr u32 PMX_ROUTINE_TEXT = 0x04273454;   // string of 1bpp glyphs
+static constexpr u32 PMX_ROUTINE_LINE = 0x04276d58;   // one pixel wide line
+static constexpr u32 PMX_ROUTINE_COPY = 0x04273770;   // word 2 = count, then (source, destination, bytes)
+static constexpr u32 PMX_ROUTINE_SYNC = 0x04271c00;   // writes word 3 to address word 2; later words are stale ring data
 
 u32 aristmk6_state::pmx_mem_r(u32 addr) const
 {
@@ -870,8 +876,18 @@ void aristmk6_state::pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int 
 	{
 		for (int x = 0; x < w; x++)
 		{
-			if (!key0 || s[x] != 0)
-				d[x] = s[x];
+			const u32 src = s[x];
+			const u32 alpha = src >> 24;
+			if (!key0 || alpha == 0xff)
+				d[x] = src;
+			else if (alpha != 0)
+			{
+				// source over, 8 bits of alpha per pixel
+				const u32 dst = d[x];
+				const u32 rb = ((src & 0xff00ff) * alpha + (dst & 0xff00ff) * (255 - alpha)) / 255;
+				const u32 g = ((src & 0x00ff00) * alpha + (dst & 0x00ff00) * (255 - alpha)) / 255;
+				d[x] = (src & 0xff000000) | (rb & 0xff00ff) | (g & 0x00ff00);
+			}
 		}
 	}
 }
@@ -940,6 +956,39 @@ void aristmk6_state::pmx_text(u32 pkt)
 			}
 		}
 		x += advance;
+	}
+}
+
+void aristmk6_state::pmx_line(u32 dst, int pitch, int x0, int y0, int x1, int y1, int clipw, int cliph, u32 color)
+{
+	const u32 base = ((dst & 0x1fffffff) - 0x04000000) / 4;
+	u32 *const fb = reinterpret_cast<u32 *>(&m_vram[0]);
+	if (pitch <= 0)
+		return;
+
+	const int dx = std::abs(x1 - x0);
+	const int dy = -std::abs(y1 - y0);
+	const int sx = (x0 < x1) ? 1 : -1;
+	const int sy = (y0 < y1) ? 1 : -1;
+	int err = dx + dy;
+	for (;;)
+	{
+		const u32 offs = base + y0 * pitch + x0;
+		if (x0 >= 0 && y0 >= 0 && x0 < clipw && y0 < cliph && offs < m_vram.bytes() / 4)
+			fb[offs] = color;
+		if (x0 == x1 && y0 == y1)
+			break;
+		const int e2 = 2 * err;
+		if (e2 >= dy)
+		{
+			err += dy;
+			x0 += sx;
+		}
+		if (e2 <= dx)
+		{
+			err += dx;
+			y0 += sy;
+		}
 	}
 }
 
@@ -1013,6 +1062,25 @@ void aristmk6_state::pmx_process_fifo()
 			pmx_text(pkt);
 			break;
 
+		case PMX_ROUTINE_LINE:
+			pmx_line(w(2), w(8) / 4, w(3) & 0xffff, w(3) >> 16, w(4) & 0xffff, w(4) >> 16, w(6) & 0xffff, w(6) >> 16, w(9));
+			break;
+
+		case PMX_ROUTINE_COPY:
+			for (u32 i = 0; i < w(2) && i < 3; i++)
+			{
+				const u32 src = (w(3 + i * 3) & 0x1fffffff) - 0x04000000;
+				const u32 dst = (w(4 + i * 3) & 0x1fffffff) - 0x04000000;
+				const u32 bytes = w(5 + i * 3);
+				if (src < m_vram.bytes() && dst < m_vram.bytes() && bytes <= m_vram.bytes() - std::max(src, dst))
+					memmove(reinterpret_cast<u8 *>(&m_vram[0]) + dst, reinterpret_cast<const u8 *>(&m_vram[0]) + src, bytes);
+			}
+			break;
+
+		case PMX_ROUTINE_SYNC:
+			pmx_mem_w(w(2), w(3));
+			break;
+
 		case PMX_ROUTINE_FLIP:
 			// word 2 selects the page: 0 or 0x100, the BIOS framebuffers are consecutive
 			m_display_base = BIT(w(2), 8) ? 640 * 480 * 4 : 0;
@@ -1020,7 +1088,8 @@ void aristmk6_state::pmx_process_fifo()
 			break;
 
 		default:
-			logerror("PMX1: unhandled routine %08x size %x\n", routine, size);
+			logerror("PMX1: unhandled routine %08x size %x: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", routine, size,
+					w(2), w(3), w(4), w(5), w(6), w(7), w(8), w(9), w(10), w(11));
 			break;
 		}
 
@@ -1082,6 +1151,7 @@ void aristmk6_state::aristmk6_map(address_map &map)
 	map(0x12000018, 0x1200001f).rw(FUNC(aristmk6_state::spi_data_r), FUNC(aristmk6_state::spi_data_w)).umask64(0x00000000000000ff);
 	map(0x12000020, 0x12000027).w(FUNC(aristmk6_state::spi_channel_w)).umask64(0x00000000000000ff);
 	map(0x12000028, 0x1200002f).nopw(); // SPI control: 0, then 3 at start-up
+	map(0x12000040, 0x12000047).lw8(NAME([this] (u8 data) { m_diverter = data & 1; })); // coin diverter solenoid
 	map(0x12000050, 0x12000057).lw8(NAME([this] (u8 data) { m_door_strobe = data & 1; }));
 	map(0x12000060, 0x12000067).nopw(); // door latch reset pulse
 	map(0x12000078, 0x1200007f).nopw(); // watchdog ??
@@ -1123,25 +1193,24 @@ static INPUT_PORTS_START( aristmk6 )
 	PORT_BIT( 0xc0, IP_ACTIVE_HIGH, IPT_UNUSED )
 
 	PORT_START("COIN")
-	PORT_BIT( 0x01, IP_ACTIVE_HIGH, IPT_COIN1 ) PORT_CHANGED_MEMBER(DEVICE_SELF, FUNC(aristmk6_state::coin_inserted), 0)
+	PORT_BIT( 0x01, IP_ACTIVE_HIGH, IPT_COIN1 ) PORT_CODE(KEYCODE_5) PORT_CODE(KEYCODE_5_PAD) PORT_CODE(KEYCODE_I) PORT_CHANGED_MEMBER(DEVICE_SELF, FUNC(aristmk6_state::coin_inserted), 0)
 
-	PORT_START("BUTTONS") // SPI channel 4 bytes 1-2: player panel, bit meanings not mapped yet
-	PORT_BIT( 0x0001, IP_ACTIVE_HIGH, IPT_BUTTON1 ) PORT_NAME("Panel 0") PORT_CODE(KEYCODE_C)
-	PORT_BIT( 0x0002, IP_ACTIVE_HIGH, IPT_BUTTON2 ) PORT_NAME("Panel 1") PORT_CODE(KEYCODE_D)
-	PORT_BIT( 0x0004, IP_ACTIVE_HIGH, IPT_BUTTON3 ) PORT_NAME("Panel 2") PORT_CODE(KEYCODE_F)
-	PORT_BIT( 0x0008, IP_ACTIVE_HIGH, IPT_BUTTON4 ) PORT_NAME("Panel 3") PORT_CODE(KEYCODE_U)
-	PORT_BIT( 0x0010, IP_ACTIVE_HIGH, IPT_BUTTON5 ) PORT_NAME("Panel 4") PORT_CODE(KEYCODE_Y)
-	PORT_BIT( 0x0020, IP_ACTIVE_HIGH, IPT_BUTTON6 ) PORT_NAME("Panel 5") PORT_CODE(KEYCODE_G)
-	PORT_BIT( 0x0040, IP_ACTIVE_HIGH, IPT_BUTTON7 ) PORT_NAME("Panel 6") PORT_CODE(KEYCODE_H)
-	PORT_BIT( 0x0080, IP_ACTIVE_HIGH, IPT_BUTTON8 ) PORT_NAME("Panel 7") PORT_CODE(KEYCODE_I)
-	PORT_BIT( 0x0100, IP_ACTIVE_HIGH, IPT_BUTTON9 ) PORT_NAME("Panel 8") PORT_CODE(KEYCODE_P)
-	PORT_BIT( 0x0200, IP_ACTIVE_HIGH, IPT_BUTTON10 ) PORT_NAME("Panel 9") PORT_CODE(KEYCODE_SPACE)
-	PORT_BIT( 0x0400, IP_ACTIVE_HIGH, IPT_BUTTON11 ) PORT_NAME("Panel 10") PORT_CODE(KEYCODE_T)
-	PORT_BIT( 0x0800, IP_ACTIVE_HIGH, IPT_BUTTON12 ) PORT_NAME("Panel 11") PORT_CODE(KEYCODE_R)
-	PORT_BIT( 0x1000, IP_ACTIVE_HIGH, IPT_BUTTON13 ) PORT_NAME("Panel 12") PORT_CODE(KEYCODE_E)
-	PORT_BIT( 0x2000, IP_ACTIVE_HIGH, IPT_BUTTON14 ) PORT_NAME("Panel 13") PORT_CODE(KEYCODE_W)
-	PORT_BIT( 0x4000, IP_ACTIVE_HIGH, IPT_BUTTON15 ) PORT_NAME("Panel 14") PORT_CODE(KEYCODE_Q)
-	PORT_BIT( 0x8000, IP_ACTIVE_HIGH, IPT_BUTTON16 ) PORT_NAME("Panel 15") PORT_CODE(KEYCODE_S)
+	PORT_START("BUTTONS") // SPI channel 4: names are for the Multi-Line key panel, other game types differ
+	PORT_BIT( 0x0001, IP_ACTIVE_HIGH, IPT_BUTTON1 ) PORT_NAME("Cashout") PORT_CODE(KEYCODE_C)
+	PORT_BIT( 0x0002, IP_ACTIVE_HIGH, IPT_BUTTON2 ) PORT_NAME("Play 1 Line") PORT_CODE(KEYCODE_A)
+	PORT_BIT( 0x0004, IP_ACTIVE_HIGH, IPT_BUTTON3 ) PORT_NAME("Play 3 Lines") PORT_CODE(KEYCODE_S)
+	PORT_BIT( 0x0008, IP_ACTIVE_HIGH, IPT_BUTTON4 ) PORT_NAME("Play 5 Lines") PORT_CODE(KEYCODE_D)
+	PORT_BIT( 0x0010, IP_ACTIVE_HIGH, IPT_BUTTON5 ) PORT_NAME("Play 7 Lines") PORT_CODE(KEYCODE_F)
+	PORT_BIT( 0x0020, IP_ACTIVE_HIGH, IPT_BUTTON6 ) PORT_NAME("Play 9 Lines") PORT_CODE(KEYCODE_G)
+	PORT_BIT( 0x00c0, IP_ACTIVE_HIGH, IPT_UNUSED )
+	PORT_BIT( 0x0100, IP_ACTIVE_HIGH, IPT_BUTTON7 ) PORT_NAME("Gamble") PORT_CODE(KEYCODE_H)
+	PORT_BIT( 0x0200, IP_ACTIVE_HIGH, IPT_BUTTON8 ) PORT_NAME("Spin Again") PORT_CODE(KEYCODE_SPACE)
+	PORT_BIT( 0x0400, IP_ACTIVE_HIGH, IPT_BUTTON9 ) PORT_NAME("Bet 10 Credits") PORT_CODE(KEYCODE_T)
+	PORT_BIT( 0x0800, IP_ACTIVE_HIGH, IPT_BUTTON10 ) PORT_NAME("Bet 5 Credits") PORT_CODE(KEYCODE_R)
+	PORT_BIT( 0x1000, IP_ACTIVE_HIGH, IPT_BUTTON11 ) PORT_NAME("Bet 3 Credits") PORT_CODE(KEYCODE_E)
+	PORT_BIT( 0x2000, IP_ACTIVE_HIGH, IPT_BUTTON12 ) PORT_NAME("Bet 2 Credits") PORT_CODE(KEYCODE_W)
+	PORT_BIT( 0x4000, IP_ACTIVE_HIGH, IPT_BUTTON13 ) PORT_NAME("Bet 1 Credit") PORT_CODE(KEYCODE_Q)
+	PORT_BIT( 0x8000, IP_ACTIVE_HIGH, IPT_BUTTON14 ) PORT_NAME("Service") PORT_CODE(KEYCODE_Y)
 INPUT_PORTS_END
 
 // ?
