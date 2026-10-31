@@ -420,6 +420,28 @@ int sh34_base_device::sh4_dma_data(struct sh4_device_dma *s)
 		return 0;
 }
 
+// called by drivers when an external device empties a channel in single address on-demand mode: copies
+// up to 'words' 64-bit words from the channel's source and completes the transfer, returns the count
+uint32_t sh34_base_device::sh4_dma_external_read(int channel, uint64_t *buffer, uint32_t words)
+{
+	uint32_t *const sar[4] = { &m_sar0, &m_sar1, &m_sar2, &m_sar3 };
+	const uint32_t chcr[4] = { m_chcr0, m_chcr1, m_chcr2, m_chcr3 };
+	const uint32_t dmatcr[4] = { m_dmatcr0, m_dmatcr1, m_dmatcr2, m_dmatcr3 };
+
+	if (!(chcr[channel] & m_dmaor & DMAOR_DME) || (chcr[channel] & CHCR_TE) || m_dma_timer_active[channel])
+		return 0;
+
+	const uint32_t count = std::min(dmatcr[channel], words);
+	uint32_t address = *sar[channel] & SH34_AM & ~7;
+	for (uint32_t i = 0; i < count; i++, address += 8)
+		buffer[i] = m_program->read_qword(address);
+	*sar[channel] = address;
+
+	m_dma_timer_active[channel] = 1;
+	m_dma_timer[channel]->adjust(attotime::zero, channel);
+	return count;
+}
+
 // called by drivers to transfer data in a DDT dma.
 void sh34_base_device::sh4_dma_ddt(struct sh4_ddt_dma *s)
 {

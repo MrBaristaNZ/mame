@@ -128,8 +128,10 @@ Crown Melbourne uses regular ASP software.
 #include "machine/ins8250.h"
 #include "machine/microtch.h"
 #include "machine/nvram.h"
+#include "sound/dmadac.h"
 #include "emupal.h"
 #include "screen.h"
+#include "speaker.h"
 
 namespace {
 
@@ -143,6 +145,7 @@ public:
 		m_uart1(*this, "uart1"),
 		m_uart2(*this, "uart2"),
 		m_uart3(*this, "uart3"),
+		m_dmadac(*this, "dmadac%u", 0U),
 		m_eeprom0(*this, "eeprom0"),
 		m_palette(*this, "palette"),
 		m_vram(*this, "vram"),
@@ -188,6 +191,9 @@ private:
 	void pmx_text(u32 pkt);
 	void pmx_line(u32 dst, int pitch, int x0, int y0, int x1, int y1, int clipw, int cliph, u32 color);
 	void pmx_update_irq();
+	uint8_t codec_r();
+	void codec_w(uint8_t data);
+	TIMER_CALLBACK_MEMBER(audio_tick);
 	template <int N> void uart_int_w(int state);
 	void vblank_w(int state);
 
@@ -209,6 +215,15 @@ private:
 	u8 m_uart_irq = 0;
 	u8 m_door_strobe = 0;
 	u8 m_diverter = 0;
+	u8 m_i2c_out = 3;                 // lines driven by the CPU: bit 0 SDA, bit 1 SCL
+	u8 m_i2c_bit = 0;
+	u8 m_i2c_byte = 0;
+	u8 m_i2c_shift = 0;
+	u8 m_i2c_reg = 0;
+	u8 m_i2c_ack = 0;
+	u8 m_codec_regs[8]{};
+	u8 m_audio_channel = 0;
+	emu_timer *m_audio_timer = nullptr;
 	attotime m_coin_time = attotime::never;
 	u8 irl3pend0 = 0, irl3en0 = 0;
 	u8 irl3pend1 = 0, irl3en1 = 0;
@@ -235,6 +250,7 @@ private:
 	required_device<ns16550_device> m_uart1;
 	required_device<ns16550_device> m_uart2;
 	required_device<ns16550_device> m_uart3;
+	required_device_array<dmadac_sound_device, 2> m_dmadac;
 	required_device<eeprom_serial_93cxx_device> m_eeprom0;
 	required_device<palette_device> m_palette;
 	required_shared_ptr<uint64_t> m_vram;
@@ -264,6 +280,21 @@ void aristmk6_state::machine_start()
 	save_item(NAME(m_uart_irq));
 	save_item(NAME(m_door_strobe));
 	save_item(NAME(m_diverter));
+	save_item(NAME(m_i2c_out));
+	save_item(NAME(m_i2c_bit));
+	save_item(NAME(m_i2c_byte));
+	save_item(NAME(m_i2c_shift));
+	save_item(NAME(m_i2c_reg));
+	save_item(NAME(m_i2c_ack));
+	save_item(NAME(m_codec_regs));
+	save_item(NAME(m_audio_channel));
+	for (auto &dac : m_dmadac)
+	{
+		dac->enable(1);
+		dac->set_frequency(5'500'000.0 / 256);
+		dac->set_volume(0x100);
+	}
+	m_audio_timer = timer_alloc(FUNC(aristmk6_state::audio_tick), this);
 	save_item(NAME(m_coin_time));
 	save_item(NAME(m_spi_tx));
 	save_item(NAME(m_spi_prev));
@@ -296,6 +327,12 @@ void aristmk6_state::machine_reset()
 	memset(m_spi_frames, 0, sizeof(m_spi_frames));
 	m_spi_channel = m_spi_pos = m_spi_rx = 0;
 	m_spi_timer->adjust(attotime::never);
+	m_i2c_out = 3;
+	m_i2c_bit = m_i2c_byte = m_i2c_shift = m_i2c_reg = m_i2c_ack = 0;
+	memset(m_codec_regs, 0, sizeof(m_codec_regs));
+	m_audio_channel = 0;
+	const attotime audio_period = attotime::from_ticks(512 * 256, 5'500'000);
+	m_audio_timer->adjust(audio_period, 0, audio_period);
 
 	std::fill(std::begin(m_pmx_cfg), std::end(m_pmx_cfg), 0);
 	m_pmx_cfg[0x00 / 4] = 0x00671033;   // device 0x0067, vendor 0x1033 (NEC)
@@ -567,6 +604,71 @@ TIMER_CALLBACK_MEMBER(aristmk6_state::spi_done)
 {
 	irl1pend |= 0x01;
 	testIrq();
+}
+
+/*
+    Audio: the mixer writes 512 frames of 16-bit stereo at 21484 Hz to main RAM, DMA channels 1 and 3 hand
+    the two buffers in turn to the audio output (single address, on-demand mode) and interrupt at the end
+    of each. The rate is that of the 57 WAV files in the game ROM: the mixer steps through them one sample
+    per output sample, and their rate is 5.5 MHz / 256. An I2C chip at address 0x20 on 0x12000138 has setup registers and a volume at register 3.
+*/
+
+uint8_t aristmk6_state::codec_r()
+{
+	return m_i2c_out & (m_i2c_ack ? ~1 : ~0);
+}
+
+void aristmk6_state::codec_w(uint8_t data)
+{
+	const u8 old = m_i2c_out;
+	m_i2c_out = data & 3;
+
+	if (BIT(old, 1) && BIT(m_i2c_out, 1))
+	{
+		if (BIT(old, 0) && !BIT(m_i2c_out, 0))   // start
+			m_i2c_bit = m_i2c_byte = 0;
+	}
+	else if (!BIT(old, 1) && BIT(m_i2c_out, 1))  // clock rises
+	{
+		if (m_i2c_bit < 8)
+		{
+			m_i2c_shift = (m_i2c_shift << 1) | BIT(m_i2c_out, 0);
+			m_i2c_bit++;
+		}
+		else
+		{
+			m_i2c_ack = 1;
+			m_i2c_bit = 0;
+			if (m_i2c_byte == 1)
+				m_i2c_reg = m_i2c_shift & 7;
+			else if (m_i2c_byte >= 2)
+			{
+				logerror("codec reg %d = %02x\n", m_i2c_reg, m_i2c_shift);
+				m_codec_regs[m_i2c_reg++ & 7] = m_i2c_shift;
+			}
+			m_i2c_byte++;
+		}
+	}
+	else if (BIT(old, 1) && !BIT(m_i2c_out, 1))  // clock falls
+		m_i2c_ack = 0;
+}
+
+TIMER_CALLBACK_MEMBER(aristmk6_state::audio_tick)
+{
+	// channels 1 and 3 form a double buffer: the mixer refills whichever one finished last
+	u64 buffer[256];
+	const int channel = m_audio_channel ? 3 : 1;
+	const u32 words = m_maincpu->sh4_dma_external_read(channel, buffer, 256);
+	if (words == 0)
+		return;
+	m_audio_channel ^= 1;
+
+	s16 samples[512 * 2];
+	for (u32 i = 0; i < words; i++)
+		for (int j = 0; j < 4; j++)
+			samples[i * 4 + j] = s16(buffer[i] >> (j * 16));
+	m_dmadac[0]->transfer(0, 1, 2, words * 2, samples);
+	m_dmadac[1]->transfer(1, 1, 2, words * 2, samples);
 }
 
 void aristmk6_state::eeprom_w(uint64_t data)
@@ -884,9 +986,13 @@ void aristmk6_state::pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int 
 			{
 				// source over, 8 bits of alpha per pixel
 				const u32 dst = d[x];
-				const u32 rb = ((src & 0xff00ff) * alpha + (dst & 0xff00ff) * (255 - alpha)) / 255;
-				const u32 g = ((src & 0x00ff00) * alpha + (dst & 0x00ff00) * (255 - alpha)) / 255;
-				d[x] = (src & 0xff000000) | (rb & 0xff00ff) | (g & 0x00ff00);
+				u32 result = src & 0xff000000;
+				for (int shift = 0; shift < 24; shift += 8)
+				{
+					const u32 c = (((src >> shift) & 0xff) * alpha + ((dst >> shift) & 0xff) * (255 - alpha) + 127) / 255;
+					result |= c << shift;
+				}
+				d[x] = result;
 			}
 		}
 	}
@@ -1155,6 +1261,8 @@ void aristmk6_state::aristmk6_map(address_map &map)
 	map(0x12000050, 0x12000057).lw8(NAME([this] (u8 data) { m_door_strobe = data & 1; }));
 	map(0x12000060, 0x12000067).nopw(); // door latch reset pulse
 	map(0x12000078, 0x1200007f).nopw(); // watchdog ??
+	map(0x120000b8, 0x120000bf).nopw(); // audio output enable
+	map(0x12000138, 0x1200013f).rw(FUNC(aristmk6_state::codec_r), FUNC(aristmk6_state::codec_w)).umask64(0x00000000000000ff);
 	map(0x12000080, 0x12000087).nopw(); // 0-1-2 written here repeatedly, diag LED or smth ?
 	map(0x120000e0, 0x120000e7).r(FUNC(aristmk6_state::hwver_r));
 	map(0x120000e8, 0x12000107).r(FUNC(aristmk6_state::irqpend_r));
@@ -1248,6 +1356,10 @@ void aristmk6_state::aristmk6(machine_config &config)
 	microtouch.stx().set(m_uart3, FUNC(ns16550_device::rx_w));
 
 	EEPROM_93C56_16BIT(config, m_eeprom0).default_value(0xff);
+
+	SPEAKER(config, "speaker", 2).front();
+	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
+	DMADAC(config, m_dmadac[1]).add_route(ALL_OUTPUTS, "speaker", 1.0, 1);
 
 	NVRAM(config, "sram0", nvram_device::DEFAULT_ALL_0);
 	NVRAM(config, "sram1", nvram_device::DEFAULT_ALL_0);
