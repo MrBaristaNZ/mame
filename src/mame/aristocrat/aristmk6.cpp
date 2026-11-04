@@ -15,8 +15,8 @@ Notes:
 TODO:
 - Identify irq sources;
 - Irq acknowledge doesn't work as intended;
-- Emulate PLX 9054 controller & PCI root;
-- PMX1 likely runs under PCI bus too, as per src/devices/bus/pci/neon250.cpp (x86 AGP card);
+- PMX1 should become a proper PCI device shared with src/devices/bus/pci/neon250.cpp (x86 AGP card);
+- PLX 9054 DMA, if the BIOS uses it;
 - Eventually gets to "flyback" errors, pings $12000130-$3f for strobe and/or irq enable.
   Flyback is an alias for vblank, cfr. Acorn Archimedes.
 
@@ -128,10 +128,117 @@ Crown Melbourne uses regular ASP software.
 #include "machine/ins8250.h"
 #include "machine/microtch.h"
 #include "machine/nvram.h"
+#include "machine/pci.h"
+#include "machine/pci9054.h"
 #include "sound/dmadac.h"
 #include "emupal.h"
 #include "screen.h"
 #include "speaker.h"
+
+
+/*
+    NEC PowerVR PMX1 (as on the VideoLogic/NEC Neon 250), PCI 1033:0067, slot 12
+
+    TEMPORARY: only the PCI face of the chip (configuration space and BARs) lives here. Its register
+    block, interrupt and the high-level microcode stand-in stay in the driver state until the PMX1
+    becomes a proper device shared with bus/pci/neon250.
+
+    BAR0 = 32MB framebuffer memory (the BIOS places it at PCI 0x04000000, which the PLX direct-master
+    window maps to CPU 0x04000000); BAR1-3 = 64MB memory each, placed at 0xe0000000 and up by the BIOS
+    but never accessed; BAR4 = 256-byte I/O register block. Configuration register 0x70 is written
+    serially by the BIOS to program the PLL (14.31818MHz reference).
+*/
+
+class aristmk6_pmx1_device : public pci_device
+{
+public:
+	aristmk6_pmx1_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock = 0);
+
+	auto io_read() { return m_io_r.bind(); }
+	auto io_write() { return m_io_w.bind(); }
+	void set_vram(void *vram) { m_vram = vram; }
+
+	virtual void config_map(address_map &map) override ATTR_COLD;
+
+protected:
+	virtual void device_start() override ATTR_COLD;
+	virtual void device_reset() override ATTR_COLD;
+
+	virtual void map_extra(uint64_t memory_window_start, uint64_t memory_window_end, uint64_t memory_offset, address_space *memory_space,
+			uint64_t io_window_start, uint64_t io_window_end, uint64_t io_offset, address_space *io_space) override;
+
+private:
+	devcb_read32 m_io_r;
+	devcb_write32 m_io_w;
+	void *m_vram = nullptr;
+	u32 m_cfg_ext[0xc0 / 4]{};        // device-specific configuration registers 0x40-0xff
+
+	void fb_map(address_map &map) ATTR_COLD { }
+	void unused_map(address_map &map) ATTR_COLD { }
+	void io_map(address_map &map) ATTR_COLD;
+};
+
+DEFINE_DEVICE_TYPE(ARISTMK6_PMX1, aristmk6_pmx1_device, "aristmk6_pmx1", "NEC PowerVR PMX1 (Aristocrat MK6, PCI side)")
+
+aristmk6_pmx1_device::aristmk6_pmx1_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock)
+	: pci_device(mconfig, ARISTMK6_PMX1, tag, owner, clock)
+	, m_io_r(*this, 0)
+	, m_io_w(*this)
+{
+	set_ids(0x10330067, 0x01, 0x030000, 0x00000000);
+}
+
+void aristmk6_pmx1_device::device_start()
+{
+	pci_device::device_start();
+
+	add_map(32 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::fb_map));
+	add_map(64 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::unused_map));
+	add_map(64 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::unused_map));
+	add_map(64 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::unused_map));
+	add_map(256, M_IO, FUNC(aristmk6_pmx1_device::io_map));
+
+	save_item(NAME(m_cfg_ext));
+}
+
+void aristmk6_pmx1_device::device_reset()
+{
+	pci_device::device_reset();
+
+	command = 0x0000;
+	status = 0x0000;
+	intr_pin = 0x01;   // INTA#
+	intr_line = 0x00;
+	std::fill(std::begin(m_cfg_ext), std::end(m_cfg_ext), 0);
+}
+
+void aristmk6_pmx1_device::config_map(address_map &map)
+{
+	pci_device::config_map(map);
+	map(0x40, 0xff).lrw32(
+			NAME([this] (offs_t offset) { return m_cfg_ext[offset]; }),
+			NAME([this] (offs_t offset, u32 data, u32 mem_mask) { COMBINE_DATA(&m_cfg_ext[offset]); }));
+}
+
+void aristmk6_pmx1_device::io_map(address_map &map)
+{
+	map(0x00, 0xff).lrw32(
+			NAME([this] (offs_t offset, u32 mem_mask) { return m_io_r(offset, mem_mask); }),
+			NAME([this] (offs_t offset, u32 data, u32 mem_mask) { m_io_w(offset, data, mem_mask); }));
+}
+
+void aristmk6_pmx1_device::map_extra(uint64_t memory_window_start, uint64_t memory_window_end, uint64_t memory_offset, address_space *memory_space,
+		uint64_t io_window_start, uint64_t io_window_end, uint64_t io_offset, address_space *io_space)
+{
+	// BAR0: the framebuffer is plain memory, shared with the driver's blitter and screen update
+	const bank_info &bi = bank_infos[0];
+	if ((command & 2) && uint32_t(bi.adr) < 0xfffffffc)
+	{
+		const uint64_t start = (bi.adr & ~uint64_t(bi.size - 1)) + memory_offset;
+		memory_space->install_ram(start, start + bi.size - 1, m_vram);
+	}
+}
+
 
 namespace {
 
@@ -141,6 +248,8 @@ public:
 	aristmk6_state(const machine_config &mconfig, device_type type, const char *tag) :
 		driver_device(mconfig, type, tag),
 		m_maincpu(*this, "maincpu"),
+		m_plx(*this, "pci:00.0"),
+		m_pmx(*this, "pci:0c.0"),
 		m_uart0(*this, "uart0"),
 		m_uart1(*this, "uart1"),
 		m_uart2(*this, "uart2"),
@@ -148,7 +257,7 @@ public:
 		m_dmadac(*this, "dmadac%u", 0U),
 		m_eeprom0(*this, "eeprom0"),
 		m_palette(*this, "palette"),
-		m_vram(*this, "vram"),
+		m_vram(*this, "vram", 0x2000000, ENDIANNESS_LITTLE),
 		m_mainram(*this, "mainram"),
 		m_keys(*this, "KEYS"),
 		m_doors(*this, "DOORS"),
@@ -168,15 +277,7 @@ private:
 	uint64_t hwver_r();
 	uint32_t screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
 
-	// PLX PCI9054 local-side registers and its direct-master I/O / configuration window
-	uint32_t plx_r(offs_t offset, uint32_t mem_mask = ~0);
-	void plx_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
-	uint32_t pci_window_r(offs_t offset, uint32_t mem_mask = ~0);
-	void pci_window_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
-
-	// NEC PowerVR PMX1 (PCI 1033:0067) in PCI slot 12: configuration space and I/O register block
-	uint32_t pmx_cfg_r(int reg);
-	void pmx_cfg_w(int reg, uint32_t data, uint32_t mem_mask);
+	// NEC PowerVR PMX1 (PCI 1033:0067) in PCI slot 12: I/O register block (BAR4)
 	uint32_t pmx_reg_r(offs_t reg, uint32_t mem_mask);
 	void pmx_reg_w(offs_t reg, uint32_t data, uint32_t mem_mask);
 
@@ -229,8 +330,6 @@ private:
 	u8 irl3pend0 = 0, irl3en0 = 0;
 	u8 irl3pend1 = 0, irl3en1 = 0;
 
-	u32 m_plx_regs[0x100 / 4]{};      // local-side register file (PCI config shadow 0x00-0x7f, local config 0x80-0xff)
-	u32 m_pmx_cfg[0x100 / 4]{};       // PMX1 PCI configuration space
 	u32 m_pmx_regs[0x100 / 4]{};      // PMX1 I/O register block (BAR4)
 	u16 m_pmx_idx[0x400]{};           // PMX1 indexed registers behind I/O 0xc0/0xc8
 	u32 m_pmx_idx_status = 0;         // value read back at I/O 0xc8
@@ -247,6 +346,8 @@ private:
 	emu_timer *m_spi_timer = nullptr;
 
 	required_device<sh7750_device> m_maincpu;
+	required_device<pci9054_device> m_plx;
+	required_device<aristmk6_pmx1_device> m_pmx;
 	required_device<ns16550_device> m_uart0;
 	required_device<ns16550_device> m_uart1;
 	required_device<ns16550_device> m_uart2;
@@ -254,7 +355,7 @@ private:
 	required_device_array<dmadac_sound_device, 2> m_dmadac;
 	required_device<eeprom_serial_93cxx_device> m_eeprom0;
 	required_device<palette_device> m_palette;
-	required_shared_ptr<uint64_t> m_vram;
+	memory_share_creator<uint64_t> m_vram;
 	required_shared_ptr<uint64_t> m_mainram;
 	required_ioport m_keys;
 	required_ioport m_doors;
@@ -267,11 +368,10 @@ void aristmk6_state::machine_start()
 	// the UTLB is an identity map apart from the 0x03c00000 PCI window, which is mapped directly above
 	m_maincpu->sh2drc_add_fastram(0x00000000, 0x003fffff, true, memregion("maincpu")->base());
 	m_maincpu->sh2drc_add_fastram(0x04000000, 0x05ffffff, false, &m_vram[0]);
+	m_pmx->set_vram(&m_vram[0]);
 	m_maincpu->sh2drc_add_fastram(0x08000000, 0x0bffffff, true, memregion("game_rom")->base());
 	m_maincpu->sh2drc_add_fastram(0x0c000000, 0x0cffffff, false, &m_mainram[0]);
 
-	save_item(NAME(m_plx_regs));
-	save_item(NAME(m_pmx_cfg));
 	save_item(NAME(m_pmx_regs));
 	save_item(NAME(m_pmx_idx));
 	save_item(NAME(m_pmx_idx_status));
@@ -332,7 +432,6 @@ void aristmk6_state::machine_reset()
 {
 	irl0pend = irl0en = irl1pend = irl1en = irl2pend = irl2en = irl3pend0 = irl3en0 = irl3pend1 = irl3en1 = 0;
 
-	std::fill(std::begin(m_plx_regs), std::end(m_plx_regs), 0);
 	std::fill(std::begin(m_pmx_regs), std::end(m_pmx_regs), 0);
 	std::fill(std::begin(m_pmx_idx), std::end(m_pmx_idx), 0);
 	m_pmx_idx_status = 0;
@@ -352,12 +451,6 @@ void aristmk6_state::machine_reset()
 	m_audio_channel = 0;
 	const attotime audio_period = getenv("MK6_AUDIO_RATE") ? attotime::from_hz(atof(getenv("MK6_AUDIO_RATE"))) * 512 : attotime::from_ticks(512 * 256, 5'500'000); // temporary: listening test
 	m_audio_timer->adjust(audio_period, 0, audio_period);
-
-	std::fill(std::begin(m_pmx_cfg), std::end(m_pmx_cfg), 0);
-	m_pmx_cfg[0x00 / 4] = 0x00671033;   // device 0x0067, vendor 0x1033 (NEC)
-	m_pmx_cfg[0x08 / 4] = 0x03000001;   // display controller, revision 1
-	m_pmx_cfg[0x20 / 4] = 0x00000001;   // BAR4: I/O space
-	m_pmx_cfg[0x3c / 4] = 0x00000100;   // interrupt pin INTA#
 }
 
 uint32_t aristmk6_state::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect)
@@ -715,121 +808,6 @@ uint64_t aristmk6_state::hwver_r()
 	// bit 4:   1 - to B24xxxxxx UARTs registers offsets will be added E0
 	// bit 5-8: unk, checked for (bit4 == 1 && bit5-8 == 1), if true set flag at C406E20
 	return 0;
-}
-
-/*
-    PLX PCI9054, local side at 0x13000000
-
-    The BIOS uses it as a PCI host bridge in direct-master mode:
-    0x04/0x06  PCICR / PCISR (status bits 0xf900 checked after each configuration cycle, write-1-to-clear)
-    0x8d       LMISC1
-    0x9c       DMRR    direct-master range (0xfc000000 = 64MB)
-    0xa0       DMLBAM  local base for direct-master memory (0x04000000)
-    0xa4       DMLBAI  local base for direct-master I/O / configuration
-    0xa8       DMPBAM  PCI base remap for direct-master memory
-    0xac       DMCFGA  0x80000000 | device << 11 | register: next window access is a configuration cycle
-    The direct-master I/O and configuration window is at 0x13c00000.
-*/
-
-uint32_t aristmk6_state::plx_r(offs_t offset, uint32_t mem_mask)
-{
-	return m_plx_regs[offset & 0x3f];
-}
-
-void aristmk6_state::plx_w(offs_t offset, uint32_t data, uint32_t mem_mask)
-{
-	offset &= 0x3f;
-	if (offset == 0x04 / 4 && ACCESSING_BITS_16_31)
-	{
-		// PCISR: write 1 to clear
-		const u32 clear = data & mem_mask & 0xffff0000;
-		m_plx_regs[offset] &= ~clear;
-		mem_mask &= 0x0000ffff;
-	}
-	COMBINE_DATA(&m_plx_regs[offset]);
-}
-
-uint32_t aristmk6_state::pci_window_r(offs_t offset, uint32_t mem_mask)
-{
-	const u32 dmcfga = m_plx_regs[0xac / 4];
-	if (BIT(dmcfga, 31))
-	{
-		// configuration cycle
-		const int device = (dmcfga >> 11) & 0x1f;
-		const int reg = dmcfga & 0xfc;
-		if (((dmcfga >> 16) & 0xff) == 0 && device == 12)
-			return pmx_cfg_r(reg);
-		m_plx_regs[0x04 / 4] |= 0x20000000;   // PCISR: received master abort (empty slot)
-		return 0xffffffff;
-	}
-
-	// I/O space: PMX1 BAR4 register block
-	const u32 io = offset * 4;
-	const u32 bar4 = m_pmx_cfg[0x20 / 4] & 0xffffff00;
-	if (io >= bar4 && io < bar4 + 0x100)
-		return pmx_reg_r((io - bar4) / 4, mem_mask);
-	logerror("PCI I/O read %08x\n", io);
-	return 0;
-}
-
-void aristmk6_state::pci_window_w(offs_t offset, uint32_t data, uint32_t mem_mask)
-{
-	const u32 dmcfga = m_plx_regs[0xac / 4];
-	if (BIT(dmcfga, 31))
-	{
-		const int device = (dmcfga >> 11) & 0x1f;
-		const int reg = dmcfga & 0xfc;
-		if (((dmcfga >> 16) & 0xff) == 0 && device == 12)
-			pmx_cfg_w(reg, data, mem_mask);
-		else
-			m_plx_regs[0x04 / 4] |= 0x20000000;
-		return;
-	}
-
-	const u32 io = offset * 4;
-	const u32 bar4 = m_pmx_cfg[0x20 / 4] & 0xffffff00;
-	if (io >= bar4 && io < bar4 + 0x100)
-		pmx_reg_w((io - bar4) / 4, data, mem_mask);
-	else
-		logerror("PCI I/O write %08x = %08x & %08x\n", io, data, mem_mask);
-}
-
-/*
-    NEC PowerVR PMX1 (as on the VideoLogic/NEC Neon 250), PCI slot 12
-
-    Configuration space: BAR0 = 32MB framebuffer memory (the BIOS places it at PCI 0x04000000, which the
-    PLX direct-master window maps to CPU 0x04000000); BAR4 = 256-byte I/O register block; register 0x70 is
-    written serially by the BIOS to program the PLL (14.31818MHz reference).
-*/
-
-uint32_t aristmk6_state::pmx_cfg_r(int reg)
-{
-	return m_pmx_cfg[(reg & 0xff) / 4];
-}
-
-void aristmk6_state::pmx_cfg_w(int reg, uint32_t data, uint32_t mem_mask)
-{
-	reg = (reg & 0xff) / 4;
-	switch (reg)
-	{
-	case 0x00 / 4: case 0x08 / 4:   // read-only IDs / class
-		break;
-	case 0x10 / 4:   // BAR0: 32MB memory
-		COMBINE_DATA(&m_pmx_cfg[reg]);
-		m_pmx_cfg[reg] &= 0xfe000000;
-		break;
-	case 0x14 / 4: case 0x18 / 4: case 0x1c / 4:   // further memory BARs, 64MB each (unused by the BIOS)
-		COMBINE_DATA(&m_pmx_cfg[reg]);
-		m_pmx_cfg[reg] &= 0xfc000000;
-		break;
-	case 0x20 / 4:   // BAR4: 256 bytes of I/O
-		COMBINE_DATA(&m_pmx_cfg[reg]);
-		m_pmx_cfg[reg] = (m_pmx_cfg[reg] & 0xffffff00) | 1;
-		break;
-	default:
-		COMBINE_DATA(&m_pmx_cfg[reg]);
-		break;
-	}
 }
 
 /*
@@ -1277,7 +1255,8 @@ void aristmk6_state::vblank_w(int state)
 void aristmk6_state::aristmk6_map(address_map &map)
 {
 	map(0x00000000, 0x003fffff).rom().region("maincpu", 0);
-	map(0x04000000, 0x05ffffff).ram().share("vram"); // VRAM 32MB
+	// PLX PCI9054: direct-master memory window onto PCI memory (the PMX1 framebuffer is at PCI 0x04000000)
+	map(0x04000000, 0x07ffffff).rw(m_plx, FUNC(pci9054_device::dm_mem_r), FUNC(pci9054_device::dm_mem_w));
 	map(0x08000000, 0x0bffffff).rom().region("game_rom", 0);
 	map(0x0c000000, 0x0cffffff).ram().share("mainram"); // Main RAM 16MB
 	map(0x10800000, 0x1087ffff).ram().share("sram0"); // SRAM0 512KB
@@ -1303,11 +1282,12 @@ void aristmk6_state::aristmk6_map(address_map &map)
 	map(0x12400008, 0x1240000f).rw(m_uart2, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
 	map(0x12400010, 0x12400017).rw(m_uart1, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
 	map(0x12400018, 0x1240001f).rw(m_uart0, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
-	map(0x13000000, 0x130000ff).rw(FUNC(aristmk6_state::plx_r), FUNC(aristmk6_state::plx_w));
+	map(0x13000000, 0x130001ff).rw(m_plx, FUNC(pci9054_device::local_r), FUNC(pci9054_device::local_w));
 	map(0x13800000, 0x13800007).r(FUNC(aristmk6_state::test_r));
-	map(0x13c00000, 0x13c0ffff).rw(FUNC(aristmk6_state::pci_window_r), FUNC(aristmk6_state::pci_window_w));
+	// PLX direct-master I/O / configuration window
+	map(0x13c00000, 0x13c0ffff).rw(m_plx, FUNC(pci9054_device::dm_io_r), FUNC(pci9054_device::dm_io_w));
 	// the BIOS also reaches the window through 0x03c00000 (its PCI-to-CPU address translation masks to 26 bits)
-	map(0x03c00000, 0x03c0ffff).rw(FUNC(aristmk6_state::pci_window_r), FUNC(aristmk6_state::pci_window_w));
+	map(0x03c00000, 0x03c0ffff).rw(m_plx, FUNC(pci9054_device::dm_io_r), FUNC(pci9054_device::dm_io_w));
 }
 
 void aristmk6_state::aristmk6_port(address_map &map)
@@ -1388,6 +1368,13 @@ void aristmk6_state::aristmk6(machine_config &config)
 	microtouch.stx().set(m_uart3, FUNC(ns16550_device::rx_w));
 
 	EEPROM_93C56_16BIT(config, m_eeprom0).default_value(0xff);
+
+	// PCI bus: the PLX PCI9054 is the host bridge, the PMX1 answers configuration cycles as device 12
+	PCI_ROOT(config, "pci");
+	PCI9054(config, m_plx);
+	ARISTMK6_PMX1(config, m_pmx);
+	m_pmx->io_read().set(FUNC(aristmk6_state::pmx_reg_r));
+	m_pmx->io_write().set(FUNC(aristmk6_state::pmx_reg_w));
 
 	SPEAKER(config, "speaker", 2).front();
 	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
