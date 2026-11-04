@@ -1377,6 +1377,18 @@ end
 
 --------------------------------------------------
 --
+--@src/devices/video/pmx1.h,VIDEOS["PMX1"] = true
+--------------------------------------------------
+
+if VIDEOS["PMX1"] then
+	files {
+		MAME_DIR .. "src/devices/video/pmx1.cpp",
+		MAME_DIR .. "src/devices/video/pmx1.h",
+	}
+end
+
+--------------------------------------------------
+--
 --@src/devices/video/ppu2c0x.h,VIDEOS["PPU2C0X"] = true
 --------------------------------------------------
 

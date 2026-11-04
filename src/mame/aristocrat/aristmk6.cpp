@@ -15,7 +15,8 @@ Notes:
 TODO:
 - Identify irq sources;
 - Irq acknowledge doesn't work as intended;
-- PMX1 should become a proper PCI device shared with src/devices/bus/pci/neon250.cpp (x86 AGP card);
+- PMX1: the chip is video/pmx1, but its PCI function is still local here; share it with
+  src/devices/bus/pci/neon250.cpp (x86 AGP card);
 - PLX 9054 DMA, if the BIOS uses it;
 - Eventually gets to "flyback" errors, pings $12000130-$3f for strobe and/or irq enable.
   Flyback is an alias for vblank, cfr. Acorn Archimedes.
@@ -131,72 +132,74 @@ Crown Melbourne uses regular ASP software.
 #include "machine/pci.h"
 #include "machine/pci9054.h"
 #include "sound/dmadac.h"
+#include "video/pmx1.h"
 #include "emupal.h"
 #include "screen.h"
 #include "speaker.h"
 
 
 /*
-    NEC PowerVR PMX1 (as on the VideoLogic/NEC Neon 250), PCI 1033:0067, slot 12
+    NEC PowerVR PMX1 (as on the VideoLogic/NEC Neon 250), PCI 1033:0067, slot 12: the MK6 PCI function
 
-    TEMPORARY: only the PCI face of the chip (configuration space and BARs) lives here. Its register
-    block, interrupt and the high-level microcode stand-in stay in the driver state until the PMX1
-    becomes a proper device shared with bus/pci/neon250.
+    The chip itself (VRAM, register block, interrupt, microcode stand-in) is video/pmx1. This is only its
+    PCI face as seen by the MK6 BIOS: BAR0 = 32MB framebuffer memory (the BIOS places it at PCI 0x04000000,
+    which the PLX direct-master window maps to CPU 0x04000000); BAR1-3 = 64MB memory each, placed at
+    0xe0000000 and up by the BIOS but never accessed; BAR4 = 256-byte I/O register block. Configuration
+    register 0x70 is written serially by the BIOS to program the PLL (14.31818MHz reference).
 
-    BAR0 = 32MB framebuffer memory (the BIOS places it at PCI 0x04000000, which the PLX direct-master
-    window maps to CPU 0x04000000); BAR1-3 = 64MB memory each, placed at 0xe0000000 and up by the BIOS
-    but never accessed; BAR4 = 256-byte I/O register block. Configuration register 0x70 is written
-    serially by the BIOS to program the PLL (14.31818MHz reference).
+    TODO: the configuration registers 0x40-0xff and the BAR sizes belong to the chip too, and should move to
+    a shared PCI function once neon250 uses the core (its AGP BAR layout differs).
 */
+
+namespace {
 
 class aristmk6_pmx1_device : public pci_device
 {
 public:
 	aristmk6_pmx1_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock = 0);
 
-	auto io_read() { return m_io_r.bind(); }
-	auto io_write() { return m_io_w.bind(); }
-	void set_vram(void *vram) { m_vram = vram; }
+	// for machine configuration, before finders are resolved
+	pmx1_device &core() { return *m_core.lookup(); }
 
 	virtual void config_map(address_map &map) override ATTR_COLD;
 
 protected:
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
 
-	virtual void map_extra(uint64_t memory_window_start, uint64_t memory_window_end, uint64_t memory_offset, address_space *memory_space,
-			uint64_t io_window_start, uint64_t io_window_end, uint64_t io_offset, address_space *io_space) override;
-
 private:
-	devcb_read32 m_io_r;
-	devcb_write32 m_io_w;
-	void *m_vram = nullptr;
+	required_device<pmx1_device> m_core;
 	u32 m_cfg_ext[0xc0 / 4]{};        // device-specific configuration registers 0x40-0xff
 
-	void fb_map(address_map &map) ATTR_COLD { }
 	void unused_map(address_map &map) ATTR_COLD { }
-	void io_map(address_map &map) ATTR_COLD;
 };
 
-DEFINE_DEVICE_TYPE(ARISTMK6_PMX1, aristmk6_pmx1_device, "aristmk6_pmx1", "NEC PowerVR PMX1 (Aristocrat MK6, PCI side)")
+} // anonymous namespace
+
+DEFINE_DEVICE_TYPE_PRIVATE(ARISTMK6_PMX1, aristmk6_pmx1_device, aristmk6_pmx1_device, "aristmk6_pmx1", "NEC PowerVR PMX1 (Aristocrat MK6, PCI side)")
 
 aristmk6_pmx1_device::aristmk6_pmx1_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock)
 	: pci_device(mconfig, ARISTMK6_PMX1, tag, owner, clock)
-	, m_io_r(*this, 0)
-	, m_io_w(*this)
+	, m_core(*this, "pmx1")
 {
 	set_ids(0x10330067, 0x01, 0x030000, 0x00000000);
+}
+
+void aristmk6_pmx1_device::device_add_mconfig(machine_config &config)
+{
+	PMX1(config, m_core);
 }
 
 void aristmk6_pmx1_device::device_start()
 {
 	pci_device::device_start();
 
-	add_map(32 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::fb_map));
+	add_map(m_core->vram_bytes(), M_MEM, *m_core, FUNC(pmx1_device::vram_map));
 	add_map(64 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::unused_map));
 	add_map(64 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::unused_map));
 	add_map(64 * 1024 * 1024, M_MEM, FUNC(aristmk6_pmx1_device::unused_map));
-	add_map(256, M_IO, FUNC(aristmk6_pmx1_device::io_map));
+	add_map(256, M_IO, *m_core, FUNC(pmx1_device::io_map));
 
 	save_item(NAME(m_cfg_ext));
 }
@@ -220,25 +223,6 @@ void aristmk6_pmx1_device::config_map(address_map &map)
 			NAME([this] (offs_t offset, u32 data, u32 mem_mask) { COMBINE_DATA(&m_cfg_ext[offset]); }));
 }
 
-void aristmk6_pmx1_device::io_map(address_map &map)
-{
-	map(0x00, 0xff).lrw32(
-			NAME([this] (offs_t offset, u32 mem_mask) { return m_io_r(offset, mem_mask); }),
-			NAME([this] (offs_t offset, u32 data, u32 mem_mask) { m_io_w(offset, data, mem_mask); }));
-}
-
-void aristmk6_pmx1_device::map_extra(uint64_t memory_window_start, uint64_t memory_window_end, uint64_t memory_offset, address_space *memory_space,
-		uint64_t io_window_start, uint64_t io_window_end, uint64_t io_offset, address_space *io_space)
-{
-	// BAR0: the framebuffer is plain memory, shared with the driver's blitter and screen update
-	const bank_info &bi = bank_infos[0];
-	if ((command & 2) && uint32_t(bi.adr) < 0xfffffffc)
-	{
-		const uint64_t start = (bi.adr & ~uint64_t(bi.size - 1)) + memory_offset;
-		memory_space->install_ram(start, start + bi.size - 1, m_vram);
-	}
-}
-
 
 namespace {
 
@@ -250,6 +234,7 @@ public:
 		m_maincpu(*this, "maincpu"),
 		m_plx(*this, "pci:00.0"),
 		m_pmx(*this, "pci:0c.0"),
+		m_pmx1(*this, "pci:0c.0:pmx1"),
 		m_uart0(*this, "uart0"),
 		m_uart1(*this, "uart1"),
 		m_uart2(*this, "uart2"),
@@ -257,7 +242,6 @@ public:
 		m_dmadac(*this, "dmadac%u", 0U),
 		m_eeprom0(*this, "eeprom0"),
 		m_palette(*this, "palette"),
-		m_vram(*this, "vram", 0x2000000, ENDIANNESS_LITTLE),
 		m_mainram(*this, "mainram"),
 		m_keys(*this, "KEYS"),
 		m_doors(*this, "DOORS"),
@@ -277,27 +261,14 @@ private:
 	uint64_t hwver_r();
 	uint32_t screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
 
-	// NEC PowerVR PMX1 (PCI 1033:0067) in PCI slot 12: I/O register block (BAR4)
-	uint32_t pmx_reg_r(offs_t reg, uint32_t mem_mask);
-	void pmx_reg_w(offs_t reg, uint32_t data, uint32_t mem_mask);
-
-	// PMX1 embedded microcode processor, high level
-	u32 pmx_mem_r(u32 addr) const;
-	void pmx_mem_w(u32 addr, u32 data);
-	void pmx_start_microcode();
-	void pmx_doorbell();
-	void pmx_process_fifo();
-	void pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0, int fade = -1);
-	void pmx_fill(u32 dst, int dx, int dy, int dpitch, int w, int h, u32 color);
-	void pmx_text(u32 pkt);
-	void pmx_line(u32 dst, int pitch, int x0, int y0, int x1, int y1, int clipw, int cliph, u32 color);
-	void pmx_update_irq();
+	// NEC PowerVR PMX1 (PCI 1033:0067) in PCI slot 12
+	void pmx_irq_w(int state);
+	u32 pmx_ring_locate();
 	uint8_t codec_r();
 	void codec_w(uint8_t data);
 	void codec_update_volume();
 	TIMER_CALLBACK_MEMBER(audio_tick);
 	template <int N> void uart_int_w(int state);
-	void vblank_w(int state);
 
 	// SPI I/O bus controller in the FPGA
 	uint8_t spi_data_r();
@@ -330,13 +301,6 @@ private:
 	u8 irl3pend0 = 0, irl3en0 = 0;
 	u8 irl3pend1 = 0, irl3en1 = 0;
 
-	u32 m_pmx_regs[0x100 / 4]{};      // PMX1 I/O register block (BAR4)
-	u16 m_pmx_idx[0x400]{};           // PMX1 indexed registers behind I/O 0xc0/0xc8
-	u32 m_pmx_idx_status = 0;         // value read back at I/O 0xc8
-	u32 m_display_base = 0;           // VRAM offset of the displayed framebuffer
-	u32 m_cif_bg0 = 0;                // PMX address of BG0Data.CIFCtl, learned from the boot handshake
-	u32 m_async_woff = 0;             // host address of the async ring write offset
-
 	u8 m_spi_tx[8][0x14]{};           // bytes shifted out in the current frame, per channel
 	u8 m_spi_prev[8][0x14]{};         // bytes shifted out in the previous frame
 	u8 m_spi_frames[8]{};             // frames seen per channel (saturates)
@@ -348,6 +312,7 @@ private:
 	required_device<sh7750_device> m_maincpu;
 	required_device<pci9054_device> m_plx;
 	required_device<aristmk6_pmx1_device> m_pmx;
+	required_device<pmx1_device> m_pmx1;
 	required_device<ns16550_device> m_uart0;
 	required_device<ns16550_device> m_uart1;
 	required_device<ns16550_device> m_uart2;
@@ -355,7 +320,6 @@ private:
 	required_device_array<dmadac_sound_device, 2> m_dmadac;
 	required_device<eeprom_serial_93cxx_device> m_eeprom0;
 	required_device<palette_device> m_palette;
-	memory_share_creator<uint64_t> m_vram;
 	required_shared_ptr<uint64_t> m_mainram;
 	required_ioport m_keys;
 	required_ioport m_doors;
@@ -367,17 +331,10 @@ void aristmk6_state::machine_start()
 {
 	// the UTLB is an identity map apart from the 0x03c00000 PCI window, which is mapped directly above
 	m_maincpu->sh2drc_add_fastram(0x00000000, 0x003fffff, true, memregion("maincpu")->base());
-	m_maincpu->sh2drc_add_fastram(0x04000000, 0x05ffffff, false, &m_vram[0]);
-	m_pmx->set_vram(&m_vram[0]);
+	m_maincpu->sh2drc_add_fastram(0x04000000, 0x05ffffff, false, m_pmx1->vram());
 	m_maincpu->sh2drc_add_fastram(0x08000000, 0x0bffffff, true, memregion("game_rom")->base());
 	m_maincpu->sh2drc_add_fastram(0x0c000000, 0x0cffffff, false, &m_mainram[0]);
 
-	save_item(NAME(m_pmx_regs));
-	save_item(NAME(m_pmx_idx));
-	save_item(NAME(m_pmx_idx_status));
-	save_item(NAME(m_display_base));
-	save_item(NAME(m_cif_bg0));
-	save_item(NAME(m_async_woff));
 	save_item(NAME(m_uart_irq));
 	save_item(NAME(m_door_strobe));
 	save_item(NAME(m_diverter));
@@ -431,13 +388,6 @@ void aristmk6_state::video_start()
 void aristmk6_state::machine_reset()
 {
 	irl0pend = irl0en = irl1pend = irl1en = irl2pend = irl2en = irl3pend0 = irl3en0 = irl3pend1 = irl3en1 = 0;
-
-	std::fill(std::begin(m_pmx_regs), std::end(m_pmx_regs), 0);
-	std::fill(std::begin(m_pmx_idx), std::end(m_pmx_idx), 0);
-	m_pmx_idx_status = 0;
-	m_display_base = 0;
-	m_cif_bg0 = 0;
-	m_async_woff = 0;
 
 	memset(m_spi_tx, 0, sizeof(m_spi_tx));
 	memset(m_spi_prev, 0, sizeof(m_spi_prev));
@@ -542,15 +492,8 @@ uint32_t aristmk6_state::screen_update(screen_device &screen, bitmap_rgb32 &bitm
     }
 */
 
-	// 640x480, 32 bpp (xRGB), pitch 640 pixels; the BIOS double buffers at VRAM 0x000000 / 0x12c000
-	const u32 *const vram = reinterpret_cast<const u32 *>(&m_vram[0]);
-	const u32 words = m_vram.bytes() / 4;
-	for (int y = cliprect.min_y; y <= cliprect.max_y; y++)
-	{
-		const u32 line = m_display_base / 4 + y * 640;
-		for (int x = cliprect.min_x; x <= cliprect.max_x; x++)
-			bitmap.pix(y, x) = (line + x < words) ? (vram[line + x] & 0xffffff) : 0;
-	}
+	// 640x480, 32 bpp (xRGB); the BIOS double buffers at VRAM 0x000000 / 0x12c000
+	m_pmx1->screen_update(screen, bitmap, cliprect);
 #endif
 
 	return 0;
@@ -811,418 +754,37 @@ uint64_t aristmk6_state::hwver_r()
 }
 
 /*
-    PMX1 I/O registers (BAR4), as used by the MK6 BIOS (pmx1.c) and matching src/mame/gaelco/atvtrack.cpp:
-    0x00       start the embedded microcode processor (1)
-    0x40/0x44  boot code address - 4, low / high 16 bits
-    0x70       interrupt pending, write 1 to acknowledge
-    0x74       interrupt mask
-    0xa4       control (0x4000 = reset)
-    0xb0/0xb4/0xbc  doorbells for the BG0 / VIN / DAC command channels (0x8001 = command queued)
-    0xc0       indexed register port: (index | 0x4400) << 16 | value = write, (index | 0x400) << 16 = read
-    0xc8       indexed register status: index << 16 | value of the last access
+    PMX1 glue. The chip's interrupt reaches the FPGA on the PCI slot 12 line: IRL3, slot 0x19, pending
+    bit 1. The PMX1 calls pmx_irq_w on every update of its interrupt registers, which sets the pending
+    bit again after an enable write (irqen_w) has cleared it.
+
+    MK6-specific HLE: the PMX1 microcode stand-in needs the asynchronous ring write offset, which the BIOS
+    keeps in main RAM. Its device block holds, in order, the ring base, the pointer to the write offset,
+    the pointer to the control block and the kick register address; the block is found by searching for
+    the last two (fixed for the one microcode revision seen so far, see video/pmx1.cpp).
 */
 
-uint32_t aristmk6_state::pmx_reg_r(offs_t reg, uint32_t mem_mask)
+static constexpr u32 PMX_VRAM_BASE  = 0x04000000;   // VRAM as the BIOS addresses it (SH-4 areas masked off)
+static constexpr u32 PMX_KICK_ADDR  = 0x03c000b0;   // async kick register, as the BIOS addresses it
+
+void aristmk6_state::pmx_irq_w(int state)
 {
-	reg &= 0x3f;
-	if (reg == 0xc8 / 4)
-		return m_pmx_idx_status;
-	return m_pmx_regs[reg];
-}
-
-void aristmk6_state::pmx_reg_w(offs_t reg, uint32_t data, uint32_t mem_mask)
-{
-	reg &= 0x3f;
-
-	if (reg == 0x70 / 4)
-	{
-		// interrupt acknowledge: write 1 to clear
-		m_pmx_regs[reg] &= ~(data & mem_mask);
-		pmx_update_irq();
-		return;
-	}
-
-	COMBINE_DATA(&m_pmx_regs[reg]);
-
-	switch (reg)
-	{
-	case 0x00 / 4:
-		if (m_pmx_regs[reg] & 0xffff)
-			pmx_start_microcode();
-		break;
-
-	case 0x74 / 4:
-		pmx_update_irq();
-		break;
-
-	case 0xb0 / 4:
-		if (m_pmx_regs[reg] == 0x8001)
-			pmx_doorbell();         // synchronous command queued on the BG0 channel
-		else
-			pmx_process_fifo();     // asynchronous ring kick
-		break;
-
-	case 0xc0 / 4:
-		{
-			const u32 value = m_pmx_regs[reg];
-			const u32 index = (value >> 16) & 0x3ff;
-			if (BIT(value, 30))   // write
-				m_pmx_idx[index] = value & 0xffff;
-			m_pmx_idx_status = (index << 16) | m_pmx_idx[index];
-		}
-		break;
-	}
-}
-
-/*
-    High-level stand-in for the PMX1's embedded microcode processor (threads BG0, VIN, TV, DAC). The
-    microcode itself is not emulated, only the contract with the BIOS (pmx1.c):
-
-    Boot: the host writes 0x55aa to BG0Data.CIFCtl[0] in VRAM, starts the processor and waits for 1.
-    Commands: each channel control block holds a linked list of ComIF blocks in VRAM
-      +0x00 microcode routine   +0x04 completion word (host 0, microcode 1)
-      +0x18 next (PMX address)  +0x1c next (host address)   +0x20 BG0.DeleteComIF: block to unlink
-    A delete command is the block itself; the microcode unlinks it from the list.
-    Asynchronous ring: packets (word 0 = size rounded up to 64 bytes, word 1 = microcode routine).
-    Control block in VRAM: +0x00 read offset, +0x80/+0x84 blit retire counters, +0x88 flip "shown"
-    counter (checked by the vblank ISR before it retires a flip), +0x8c fence flag.
-
-    The BIOS keeps the write offset in main RAM. Its device block holds, in order, the ring base, the
-    pointer to the write offset, the pointer to the control block and the kick register address; the
-    block is found by searching for the last two on the first kick.
-
-    TODO: ring and routine addresses are fixed: they match the one microcode revision seen so far (BIOS
-    us1 and setchip 06.03.04). Derive them from the microcode symbol tables for other revisions.
-*/
-
-static constexpr u32 PMX_ASYNC_CTRL   = 0x0425d000;
-static constexpr u32 PMX_ASYNC_RING   = 0x0425e000;
-static constexpr u32 PMX_KICK_ADDR    = 0x03c000b0;   // async kick register, as the BIOS addresses it
-static constexpr u32 PMX_ROUTINE_FLIP = 0x04278ff0;
-static constexpr u32 PMX_ROUTINE_BLTA = 0x0427b624;   // opaque blit
-static constexpr u32 PMX_ROUTINE_BLTB = 0x04279110;   // blit with per-pixel alpha; if word 2 bit 1 is set, top byte = fade
-static constexpr u32 PMX_ROUTINE_FILL = 0x04278534;   // solid rectangle
-static constexpr u32 PMX_ROUTINE_TEXT = 0x04273454;   // string of 1bpp glyphs
-static constexpr u32 PMX_ROUTINE_LINE = 0x04276d58;   // one pixel wide line
-static constexpr u32 PMX_ROUTINE_COPY = 0x04273770;   // word 2 = count, then (source, destination, bytes)
-static constexpr u32 PMX_ROUTINE_SYNC = 0x04271c00;   // writes word 3 to address word 2; later words are stale ring data
-
-u32 aristmk6_state::pmx_mem_r(u32 addr) const
-{
-	const u32 offset = (addr & 0x1fffffff) - 0x04000000;
-	return (offset < m_vram.bytes()) ? reinterpret_cast<const u32 *>(&m_vram[0])[offset / 4] : 0;
-}
-
-void aristmk6_state::pmx_mem_w(u32 addr, u32 data)
-{
-	const u32 offset = (addr & 0x1fffffff) - 0x04000000;
-	if (offset < m_vram.bytes())
-		reinterpret_cast<u32 *>(&m_vram[0])[offset / 4] = data;
-}
-
-void aristmk6_state::pmx_start_microcode()
-{
-	// the handshake word sits in the microcode data area at the top of VRAM
-	const u32 *const vram = reinterpret_cast<const u32 *>(&m_vram[0]);
-	for (int i = m_vram.bytes() / 4 - 1; i >= 0; i--)
-	{
-		if (vram[i] == 0x000055aa)
-		{
-			m_cif_bg0 = 0x04000000 + i * 4;
-			m_async_woff = 0;
-			pmx_mem_w(m_cif_bg0, 1);
-			logerror("PMX1: microcode started, BG0 control block at %08x\n", m_cif_bg0);
-			return;
-		}
-	}
-	logerror("PMX1: microcode started, handshake word not found\n");
-}
-
-void aristmk6_state::pmx_doorbell()
-{
-	if (m_cif_bg0 == 0)
-		return;
-
-	u32 prev = 0;
-	u32 cif = pmx_mem_r(m_cif_bg0 + 4);
-	for (int count = 0; cif != 0 && count < 256; count++)
-	{
-		const u32 next = pmx_mem_r(cif + 0x1c);
-		if (pmx_mem_r(cif + 0x00) != 0 && pmx_mem_r(cif + 0x04) == 0)
-		{
-			if (prev != 0 && (pmx_mem_r(cif + 0x20) & 0x1fffffff) == (cif & 0x1fffffff))
-			{
-				// BG0.DeleteComIF
-				pmx_mem_w(prev + 0x1c, next);
-				pmx_mem_w(prev + 0x18, pmx_mem_r(cif + 0x18));
-				pmx_mem_w(cif + 0x20, 0);
-				pmx_mem_w(cif + 0x04, 1);
-				cif = next;
-				continue;
-			}
-			pmx_mem_w(cif + 0x04, 1);
-		}
-		prev = cif;
-		cif = next;
-	}
-}
-
-void aristmk6_state::pmx_blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0, int fade)
-{
-	const u32 bytes = m_vram.bytes();
-	const u32 soffs = (src & 0x1fffffff) - 0x04000000 + (sy * spitch + sx) * 4;
-	const u32 doffs = (dst & 0x1fffffff) - 0x04000000 + (dy * dpitch + dx) * 4;
-	if (w <= 0 || h <= 0 || spitch <= 0 || dpitch <= 0)
-		return;
-	if (u64(soffs) + u64((h - 1) * spitch + w) * 4 > bytes || u64(doffs) + u64((h - 1) * dpitch + w) * 4 > bytes)
-	{
-		logerror("PMX1: blit out of range src %08x dst %08x %dx%d\n", src, dst, w, h);
-		return;
-	}
-
-	const u32 *s = reinterpret_cast<const u32 *>(&m_vram[0]) + soffs / 4;
-	u32 *d = reinterpret_cast<u32 *>(&m_vram[0]) + doffs / 4;
-	for (int y = 0; y < h; y++, s += spitch, d += dpitch)
-	{
-		for (int x = 0; x < w; x++)
-		{
-			const u32 src = s[x];
-			u32 alpha = src >> 24;
-			if (fade >= 0)
-				alpha = alpha * fade / 255;
-			if (!key0 || alpha == 0xff)
-				d[x] = src;
-			else if (alpha != 0)
-			{
-				// source over, 8 bits of alpha per pixel
-				const u32 dst = d[x];
-				u32 result = src & 0xff000000;
-				for (int shift = 0; shift < 24; shift += 8)
-				{
-					const u32 c = (((src >> shift) & 0xff) * alpha + ((dst >> shift) & 0xff) * (255 - alpha) + 127) / 255;
-					result |= c << shift;
-				}
-				d[x] = result;
-			}
-		}
-	}
-}
-
-void aristmk6_state::pmx_fill(u32 dst, int dx, int dy, int dpitch, int w, int h, u32 color)
-{
-	const u32 doffs = (dst & 0x1fffffff) - 0x04000000 + (dy * dpitch + dx) * 4;
-	if (w <= 0 || h <= 0 || dpitch <= 0 || u64(doffs) + u64((h - 1) * dpitch + w) * 4 > m_vram.bytes())
-	{
-		logerror("PMX1: fill out of range dst %08x %dx%d\n", dst, w, h);
-		return;
-	}
-
-	u32 *d = reinterpret_cast<u32 *>(&m_vram[0]) + doffs / 4;
-	for (int y = 0; y < h; y++, d += dpitch)
-		std::fill_n(d, w, color);
-}
-
-/*
-    Text packet: +0x08 destination, +0x0c pitch in bytes << 1 | 1, +0x10 y << 16 | x, +0x14 glyph count,
-    +0x1c clip height << 16 | width, +0x20 foreground, +0x24 background, then (glyph, advance) pairs.
-    A glyph is 2 bytes of padding, width, height and 4 bytes of flags, then 1bpp rows, MSB left. The
-    BIOS fills the background first, so only foreground pixels are drawn here.
-*/
-void aristmk6_state::pmx_text(u32 pkt)
-{
-	const u32 dst = pmx_mem_r(pkt + 0x08);
-	const int pitch = pmx_mem_r(pkt + 0x0c) >> 3;
-	const u32 pos = pmx_mem_r(pkt + 0x10);
-	const u32 count = pmx_mem_r(pkt + 0x14);
-	const u32 clip = pmx_mem_r(pkt + 0x1c);
-	const u32 color = pmx_mem_r(pkt + 0x20);
-	const int clipw = clip & 0xffff;
-	const int cliph = clip >> 16;
-	const u8 *const vram = reinterpret_cast<const u8 *>(&m_vram[0]);
-	u32 *const fb = reinterpret_cast<u32 *>(&m_vram[0]);
-	const u32 base = ((dst & 0x1fffffff) - 0x04000000) / 4;
-	if (pitch <= 0 || pitch > 4096)
-		return;
-
-	int x = pos & 0xffff;
-	const int y = pos >> 16;
-	for (u32 i = 0; i < count && i < 0x200; i++)
-	{
-		const u32 glyph = (pmx_mem_r(pkt + 0x28 + i * 8) & 0x1fffffff) - 0x04000000;
-		const u32 advance = pmx_mem_r(pkt + 0x2c + i * 8);
-		if (glyph + 8 < m_vram.bytes())
-		{
-			const int gw = vram[glyph + 2];
-			const int gh = vram[glyph + 3];
-			const int rowbytes = (gw + 7) / 8;
-			if (glyph + 8 + gh * rowbytes <= m_vram.bytes())
-			{
-				for (int gy = 0; gy < gh; gy++)
-				{
-					const u8 *const row = &vram[glyph + 8 + gy * rowbytes];
-					const int py = y + gy;
-					for (int gx = 0; gx < gw; gx++)
-					{
-						const int px = x + gx;
-						const u32 offs = base + py * pitch + px;
-						if (BIT(row[gx >> 3], 7 - (gx & 7)) && px < clipw && py < cliph && offs < m_vram.bytes() / 4)
-							fb[offs] = color;
-					}
-				}
-			}
-		}
-		x += advance;
-	}
-}
-
-void aristmk6_state::pmx_line(u32 dst, int pitch, int x0, int y0, int x1, int y1, int clipw, int cliph, u32 color)
-{
-	const u32 base = ((dst & 0x1fffffff) - 0x04000000) / 4;
-	u32 *const fb = reinterpret_cast<u32 *>(&m_vram[0]);
-	if (pitch <= 0)
-		return;
-
-	const int dx = std::abs(x1 - x0);
-	const int dy = -std::abs(y1 - y0);
-	const int sx = (x0 < x1) ? 1 : -1;
-	const int sy = (y0 < y1) ? 1 : -1;
-	int err = dx + dy;
-	for (;;)
-	{
-		const u32 offs = base + y0 * pitch + x0;
-		if (x0 >= 0 && y0 >= 0 && x0 < clipw && y0 < cliph && offs < m_vram.bytes() / 4)
-			fb[offs] = color;
-		if (x0 == x1 && y0 == y1)
-			break;
-		const int e2 = 2 * err;
-		if (e2 >= dy)
-		{
-			err += dy;
-			x0 += sx;
-		}
-		if (e2 <= dx)
-		{
-			err += dx;
-			y0 += sy;
-		}
-	}
-}
-
-void aristmk6_state::pmx_process_fifo()
-{
-	if (m_async_woff == 0)
-	{
-		if (m_pmx_regs[0xb0 / 4] == 0)
-			return;
-		const u32 *const ram = reinterpret_cast<const u32 *>(&m_mainram[0]);
-		for (u32 i = 1; i < m_mainram.bytes() / 4 - 1; i++)
-		{
-			if (ram[i] == PMX_ASYNC_CTRL && ram[i + 1] == PMX_KICK_ADDR)
-			{
-				m_async_woff = ram[i - 1];
-				logerror("PMX1: async write offset at %08x\n", m_async_woff);
-				break;
-			}
-		}
-		if (m_async_woff == 0)
-			return;
-	}
-
-	const u32 write = m_maincpu->space(AS_PROGRAM).read_dword(m_async_woff) & 0xffff;
-	u32 read = pmx_mem_r(PMX_ASYNC_CTRL) & 0xffff;
-
-	for (int count = 0; read != write && count < 4096; count++)
-	{
-		const u32 pkt = PMX_ASYNC_RING + read;
-		const u32 size = pmx_mem_r(pkt);
-		const u32 routine = pmx_mem_r(pkt + 4);
-		if (size < 8 || size > 0x1000)
-		{
-			logerror("PMX1: bad ring packet at %04x, size %x\n", read, size);
-			read = write;
-			break;
-		}
-
-		const auto w = [this, pkt] (int i) { return pmx_mem_r(pkt + i * 4); };
-		if (size == 0x14)
-		{
-			// fence: everything queued before it has been executed
-			pmx_mem_w(PMX_ASYNC_CTRL + 0x8c, 1);
-			read = (read + 0x40) & 0xffff;
-			continue;
-		}
-
-		switch (routine)
-		{
-		case PMX_ROUTINE_BLTB:
-			pmx_blit(w(8), w(12) >> 16, w(13) & 0xffff, w(11) >> 16,
-					w(9), w(10) & 0xffff, w(13) >> 16, w(11) & 0xffff,
-					w(10) >> 16, w(12) & 0xffff, true, BIT(w(2), 1) ? int(w(2) >> 24) : -1);
-			pmx_mem_w(w(15), w(14));
-			pmx_mem_w(w(17), w(16));
-			break;
-
-		case PMX_ROUTINE_BLTA:
-			pmx_blit(w(2), w(4) >> 16, w(5) & 0xffff, w(7) >> 16,
-					w(3), w(6) & 0xffff, w(5) >> 16, w(7) & 0xffff,
-					w(6) >> 16, w(4) & 0xffff, false);
-			pmx_mem_w(w(13), w(12));
-			pmx_mem_w(w(15), w(14));
-			break;
-
-		case PMX_ROUTINE_FILL:
-			pmx_fill(w(2), w(4) >> 16, w(4) & 0xffff, (w(3) >> 16) / 4, w(5) >> 16, w(5) & 0xffff, w(7));
-			break;
-
-		case PMX_ROUTINE_TEXT:
-			pmx_text(pkt);
-			break;
-
-		case PMX_ROUTINE_LINE:
-			pmx_line(w(2), w(8) / 4, w(3) & 0xffff, w(3) >> 16, w(4) & 0xffff, w(4) >> 16, w(6) & 0xffff, w(6) >> 16, w(9));
-			break;
-
-		case PMX_ROUTINE_COPY:
-			for (u32 i = 0; i < w(2) && i < 3; i++)
-			{
-				const u32 src = (w(3 + i * 3) & 0x1fffffff) - 0x04000000;
-				const u32 dst = (w(4 + i * 3) & 0x1fffffff) - 0x04000000;
-				const u32 bytes = w(5 + i * 3);
-				if (src < m_vram.bytes() && dst < m_vram.bytes() && bytes <= m_vram.bytes() - std::max(src, dst))
-					memmove(reinterpret_cast<u8 *>(&m_vram[0]) + dst, reinterpret_cast<const u8 *>(&m_vram[0]) + src, bytes);
-			}
-			break;
-
-		case PMX_ROUTINE_SYNC:
-			pmx_mem_w(w(2), w(3));
-			break;
-
-		case PMX_ROUTINE_FLIP:
-			// word 2 selects the page: 0 or 0x100, the BIOS framebuffers are consecutive
-			m_display_base = BIT(w(2), 8) ? 640 * 480 * 4 : 0;
-			pmx_mem_w(w(7), w(6));
-			break;
-
-		default:
-			logerror("PMX1: unhandled routine %08x size %x: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", routine, size,
-					w(2), w(3), w(4), w(5), w(6), w(7), w(8), w(9), w(10), w(11));
-			break;
-		}
-
-		read = (read + ((size + 63) & ~63)) & 0xffff;
-	}
-
-	pmx_mem_w(PMX_ASYNC_CTRL, read);
-}
-
-void aristmk6_state::pmx_update_irq()
-{
-	// PMX1 interrupt reaches the FPGA on the PCI slot 12 line: IRL3, slot 0x19, pending bit 1
-	if (m_pmx_regs[0x70 / 4] & ~m_pmx_regs[0x74 / 4] & 0xffff)
+	if (state)
 		irl3pend0 |= 0x02;
 	else
 		irl3pend0 &= ~0x02;
 	testIrq();
+}
+
+u32 aristmk6_state::pmx_ring_locate()
+{
+	const u32 *const ram = reinterpret_cast<const u32 *>(&m_mainram[0]);
+	for (u32 i = 1; i < m_mainram.bytes() / 4 - 1; i++)
+	{
+		if (ram[i] == PMX_VRAM_BASE + pmx1_device::HLE_ASYNC_CTRL && ram[i + 1] == PMX_KICK_ADDR)
+			return ram[i - 1];
+	}
+	return 0;
 }
 
 template <int N>
@@ -1240,16 +802,6 @@ INPUT_CHANGED_MEMBER(aristmk6_state::coin_inserted)
 {
 	if (newval)
 		m_coin_time = machine().time();
-}
-
-void aristmk6_state::vblank_w(int state)
-{
-	if (state)
-	{
-		pmx_process_fifo();
-		m_pmx_regs[0x70 / 4] |= 0x04;
-		pmx_update_irq();
-	}
 }
 
 void aristmk6_state::aristmk6_map(address_map &map)
@@ -1373,8 +925,11 @@ void aristmk6_state::aristmk6(machine_config &config)
 	PCI_ROOT(config, "pci");
 	PCI9054(config, m_plx);
 	ARISTMK6_PMX1(config, m_pmx);
-	m_pmx->io_read().set(FUNC(aristmk6_state::pmx_reg_r));
-	m_pmx->io_write().set(FUNC(aristmk6_state::pmx_reg_w));
+	pmx1_device &pmx1(m_pmx->core());
+	pmx1.set_host_vram_address(PMX_VRAM_BASE, 0x1fffffff);
+	pmx1.irq_cb().set(FUNC(aristmk6_state::pmx_irq_w));
+	pmx1.host_read32().set([this] (offs_t offset) -> u32 { return m_maincpu->space(AS_PROGRAM).read_dword(offset); });
+	pmx1.ring_locate().set(FUNC(aristmk6_state::pmx_ring_locate));
 
 	SPEAKER(config, "speaker", 2).front();
 	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
@@ -1391,7 +946,7 @@ void aristmk6_state::aristmk6(machine_config &config)
 	screen.set_size(640, 480);
 	screen.set_visarea(0, 640-1, 0, 480-1);
 	screen.set_screen_update(FUNC(aristmk6_state::screen_update));
-	screen.screen_vblank().set(FUNC(aristmk6_state::vblank_w));
+	screen.screen_vblank().set(pmx1, FUNC(pmx1_device::vblank_w));
 
 	PALETTE(config, m_palette).set_entries(0x1000);
 }
