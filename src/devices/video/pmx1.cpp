@@ -47,6 +47,7 @@ pmx1_device::pmx1_device(const machine_config &mconfig, const char *tag, device_
 	, m_ring_locate(*this, 0)
 	, m_host_base(0)
 	, m_host_mask(0xffffffff)
+	, m_bus_base(0)
 {
 }
 
@@ -194,15 +195,28 @@ constexpr u32 ROUTINE_SYNC = 0x271c00;   // writes word 3 to address word 2; lat
 
 } // anonymous namespace
 
+// EXPERIMENT (dual PMX1): command blocks and ring packets hold host addresses for some fields and the
+// chip's own bus (PCI BAR0) addresses for others; on the MK6 single-video board both are 0x04000000, on the
+// dual-video board they differ (host 0x04000000 / 0x06000000, bus 0x08000000 / 0x0c000000; OBSERVED in ring
+// packets). An address outside the host range is taken as a bus address.
+u32 pmx1_device::vram_offset(u32 addr) const
+{
+	const u32 masked = addr & m_host_mask;
+	const u32 host = masked - m_host_base;
+	if (host < m_vram.bytes() || m_bus_base == 0 || m_bus_base == m_host_base)
+		return host;
+	return masked - m_bus_base;
+}
+
 u32 pmx1_device::mem_r(u32 addr) const
 {
-	const u32 offset = (addr & m_host_mask) - m_host_base;
+	const u32 offset = vram_offset(addr);
 	return (offset < m_vram.bytes()) ? m_vram[offset / 4] : 0;
 }
 
 void pmx1_device::mem_w(u32 addr, u32 data)
 {
-	const u32 offset = (addr & m_host_mask) - m_host_base;
+	const u32 offset = vram_offset(addr);
 	if (offset < m_vram.bytes())
 		m_vram[offset / 4] = data;
 }
@@ -257,8 +271,8 @@ void pmx1_device::doorbell()
 void pmx1_device::blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int dy, int dpitch, int w, int h, bool key0, int fade)
 {
 	const u32 bytes = m_vram.bytes();
-	const u32 soffs = (src & m_host_mask) - m_host_base + (u32(sy) * u32(spitch) + u32(sx)) * 4;
-	const u32 doffs = (dst & m_host_mask) - m_host_base + (u32(dy) * u32(dpitch) + u32(dx)) * 4;
+	const u32 soffs = vram_offset(src) + (u32(sy) * u32(spitch) + u32(sx)) * 4;
+	const u32 doffs = vram_offset(dst) + (u32(dy) * u32(dpitch) + u32(dx)) * 4;
 	if (w <= 0 || h <= 0 || spitch <= 0 || dpitch <= 0)
 		return;
 	if (u64(soffs) + (u64(h - 1) * spitch + w) * 4 > bytes || u64(doffs) + (u64(h - 1) * dpitch + w) * 4 > bytes)
@@ -297,7 +311,7 @@ void pmx1_device::blit(u32 src, int sx, int sy, int spitch, u32 dst, int dx, int
 
 void pmx1_device::fill(u32 dst, int dx, int dy, int dpitch, int w, int h, u32 color)
 {
-	const u32 doffs = (dst & m_host_mask) - m_host_base + (u32(dy) * u32(dpitch) + u32(dx)) * 4;
+	const u32 doffs = vram_offset(dst) + (u32(dy) * u32(dpitch) + u32(dx)) * 4;
 	if (w <= 0 || h <= 0 || dpitch <= 0 || u64(doffs) + (u64(h - 1) * dpitch + w) * 4 > m_vram.bytes())
 	{
 		logerror("fill out of range dst %08x %dx%d\n", dst, w, h);
@@ -327,7 +341,7 @@ void pmx1_device::text(u32 pkt)
 	const int cliph = clip >> 16;
 	const u8 *const vram = reinterpret_cast<const u8 *>(m_vram.target());
 	u32 *const fb = m_vram.target();
-	const u32 base = ((dst & m_host_mask) - m_host_base) / 4;
+	const u32 base = vram_offset(dst) / 4;
 	if (pitch <= 0 || pitch > 4096)
 		return;
 
@@ -335,7 +349,7 @@ void pmx1_device::text(u32 pkt)
 	const int y = pos >> 16;
 	for (u32 i = 0; i < count && i < 0x200; i++)
 	{
-		const u32 glyph = (mem_r(pkt + 0x28 + i * 8) & m_host_mask) - m_host_base;
+		const u32 glyph = vram_offset(mem_r(pkt + 0x28 + i * 8));
 		const u32 advance = mem_r(pkt + 0x2c + i * 8);
 		if (glyph + 8 < m_vram.bytes())
 		{
@@ -364,7 +378,7 @@ void pmx1_device::text(u32 pkt)
 
 void pmx1_device::line(u32 dst, int pitch, int x0, int y0, int x1, int y1, int clipw, int cliph, u32 color)
 {
-	const u32 base = ((dst & m_host_mask) - m_host_base) / 4;
+	const u32 base = vram_offset(dst) / 4;
 	u32 *const fb = m_vram.target();
 	if (pitch <= 0)
 		return;
@@ -433,7 +447,7 @@ void pmx1_device::process_ring()
 			continue;
 		}
 
-		switch (routine - m_host_base)
+		switch (vram_offset(routine))
 		{
 		case ROUTINE_BLTB:
 			blit(w(8), w(12) >> 16, w(13) & 0xffff, w(11) >> 16,
@@ -466,8 +480,8 @@ void pmx1_device::process_ring()
 		case ROUTINE_COPY:
 			for (u32 i = 0; i < w(2) && i < 3; i++)
 			{
-				const u32 src = (w(3 + i * 3) & m_host_mask) - m_host_base;
-				const u32 dst = (w(4 + i * 3) & m_host_mask) - m_host_base;
+				const u32 src = vram_offset(w(3 + i * 3));
+				const u32 dst = vram_offset(w(4 + i * 3));
 				const u32 bytes = w(5 + i * 3);
 				if (src < m_vram.bytes() && dst < m_vram.bytes() && bytes <= m_vram.bytes() - std::max(src, dst))
 				{

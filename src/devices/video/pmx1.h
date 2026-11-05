@@ -38,6 +38,10 @@ public:
 	// applied to such addresses first (e.g. to drop SH-4 cache area bits)
 	void set_host_vram_address(u32 base, u32 mask) { m_host_base = base; m_host_mask = mask; }
 
+	// EXPERIMENT (dual PMX1), HLE: VRAM address on the chip's own bus (PCI BAR0), as the microcode sees it in
+	// ring packets; 0 = same as the host address. The owner updates it when the BAR moves.
+	void set_bus_vram_address(u32 base) { m_bus_base = base; }
+
 	void vram_map(address_map &map) ATTR_COLD;
 	void io_map(address_map &map) ATTR_COLD;
 
@@ -59,6 +63,7 @@ private:
 	devcb_read32 m_ring_locate;
 	u32 m_host_base;
 	u32 m_host_mask;
+	u32 m_bus_base;
 
 	u32 m_regs[0x100 / 4];          // I/O register block
 	u16 m_idx[0x400];               // indexed registers behind I/O 0xc0/0xc8
@@ -75,6 +80,7 @@ private:
 	void update_irq();
 
 	// high-level stand-in for the embedded microcode processor
+	u32 vram_offset(u32 addr) const;
 	u32 mem_r(u32 addr) const;
 	void mem_w(u32 addr, u32 data);
 	void start_microcode();

@@ -161,7 +161,12 @@ public:
 	// for machine configuration, before finders are resolved
 	pmx1_device &core() { return *m_core.lookup(); }
 
+	// PCI address the BIOS assigned to a BAR (4 = the I/O register block)
+	u32 bar_address(int bar) const { return u32(bank_infos[bar].adr); }
+
 	virtual void config_map(address_map &map) override ATTR_COLD;
+	virtual void map_extra(uint64_t memory_window_start, uint64_t memory_window_end, uint64_t memory_offset, address_space *memory_space,
+			uint64_t io_window_start, uint64_t io_window_end, uint64_t io_offset, address_space *io_space) override;
 
 protected:
 	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
@@ -215,6 +220,15 @@ void aristmk6_pmx1_device::device_reset()
 	std::fill(std::begin(m_cfg_ext), std::end(m_cfg_ext), 0);
 }
 
+// EXPERIMENT (dual PMX1): tell the core where BAR0 is, for the HLE of ring packets (see pmx1_device::vram_offset)
+void aristmk6_pmx1_device::map_extra(uint64_t memory_window_start, uint64_t memory_window_end, uint64_t memory_offset, address_space *memory_space,
+		uint64_t io_window_start, uint64_t io_window_end, uint64_t io_offset, address_space *io_space)
+{
+	const u32 bar0 = u32(bank_infos[0].adr);
+	if (BIT(command, 1) && bar0 < 0xfffffffc)
+		m_core->set_bus_vram_address(bar0 & ~(bank_infos[0].size - 1));
+}
+
 void aristmk6_pmx1_device::config_map(address_map &map)
 {
 	pci_device::config_map(map);
@@ -235,6 +249,8 @@ public:
 		m_plx(*this, "pci:00.0"),
 		m_pmx(*this, "pci:0c.0"),
 		m_pmx1(*this, "pci:0c.0:pmx1"),
+		m_pmx_top(*this, "pci:0d.0"),
+		m_pmx1_top(*this, "pci:0d.0:pmx1"),
 		m_uart0(*this, "uart0"),
 		m_uart1(*this, "uart1"),
 		m_uart2(*this, "uart2"),
@@ -249,6 +265,7 @@ public:
 	{ }
 
 	void aristmk6(machine_config &config);
+	void aristmk6_dual(machine_config &config);
 	DECLARE_INPUT_CHANGED_MEMBER(coin_inserted);
 
 private:
@@ -260,10 +277,14 @@ private:
 	void eeprom_w(uint64_t data);
 	uint64_t hwver_r();
 	uint32_t screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
+	uint32_t screen_update_top(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
 
-	// NEC PowerVR PMX1 (PCI 1033:0067) in PCI slot 12
-	void pmx_irq_w(int state);
-	u32 pmx_ring_locate();
+	// NEC PowerVR PMX1 (PCI 1033:0067) in PCI slot 12, and the second one (PMC video board) in slot 13
+	template <int Bit> void pmx_irq_w(int state);
+	u32 pmx_ring_locate(u32 vram_base, u32 io_base);
+	u32 pci_window_r(offs_t offset, u32 mem_mask = ~0);
+	void pci_window_w(offs_t offset, u32 data, u32 mem_mask = ~0);
+	bool pci_window_offset(offs_t &offset) const;
 	uint8_t codec_r();
 	void codec_w(uint8_t data);
 	void codec_update_volume();
@@ -301,6 +322,12 @@ private:
 	u8 irl3pend0 = 0, irl3en0 = 0;
 	u8 irl3pend1 = 0, irl3en1 = 0;
 
+	// EXPERIMENT (dual PMX1): hardware version register value of the board variant, set by the machine
+	// configuration (0 = the single-video board all working games run on), and the FPGA registers
+	// 0x12000158 / 0x12000160 that the BIOS writes on the dual-video variant
+	u32 m_hwver = 0;
+	u32 m_fpga_window[2]{};
+
 	u8 m_spi_tx[8][0x14]{};           // bytes shifted out in the current frame, per channel
 	u8 m_spi_prev[8][0x14]{};         // bytes shifted out in the previous frame
 	u8 m_spi_frames[8]{};             // frames seen per channel (saturates)
@@ -313,6 +340,8 @@ private:
 	required_device<pci9054_device> m_plx;
 	required_device<aristmk6_pmx1_device> m_pmx;
 	required_device<pmx1_device> m_pmx1;
+	optional_device<aristmk6_pmx1_device> m_pmx_top;
+	optional_device<pmx1_device> m_pmx1_top;
 	required_device<ns16550_device> m_uart0;
 	required_device<ns16550_device> m_uart1;
 	required_device<ns16550_device> m_uart2;
@@ -332,6 +361,10 @@ void aristmk6_state::machine_start()
 	// the UTLB is an identity map apart from the 0x03c00000 PCI window, which is mapped directly above
 	m_maincpu->sh2drc_add_fastram(0x00000000, 0x003fffff, true, memregion("maincpu")->base());
 	m_maincpu->sh2drc_add_fastram(0x04000000, 0x05ffffff, false, m_pmx1->vram());
+	// EXPERIMENT (dual PMX1): the second chip's VRAM as the BIOS addresses it on the dual-video board
+	// (fast path past the window decode, like the first chip's)
+	if (m_pmx1_top)
+		m_maincpu->sh2drc_add_fastram(0x06000000, 0x07ffffff, false, m_pmx1_top->vram());
 	m_maincpu->sh2drc_add_fastram(0x08000000, 0x0bffffff, true, memregion("game_rom")->base());
 	m_maincpu->sh2drc_add_fastram(0x0c000000, 0x0cffffff, false, &m_mainram[0]);
 
@@ -345,6 +378,7 @@ void aristmk6_state::machine_start()
 	save_item(NAME(m_i2c_reg));
 	save_item(NAME(m_i2c_ack));
 	save_item(NAME(m_codec_regs));
+	save_item(NAME(m_fpga_window));
 	save_item(NAME(m_audio_channel));
 	for (auto &dac : m_dmadac)
 	{
@@ -388,6 +422,7 @@ void aristmk6_state::video_start()
 void aristmk6_state::machine_reset()
 {
 	irl0pend = irl0en = irl1pend = irl1en = irl2pend = irl2en = irl3pend0 = irl3en0 = irl3pend1 = irl3en1 = 0;
+	m_fpga_window[0] = m_fpga_window[1] = 0;
 
 	memset(m_spi_tx, 0, sizeof(m_spi_tx));
 	memset(m_spi_prev, 0, sizeof(m_spi_prev));
@@ -497,6 +532,12 @@ uint32_t aristmk6_state::screen_update(screen_device &screen, bitmap_rgb32 &bitm
 #endif
 
 	return 0;
+}
+
+// EXPERIMENT (dual PMX1): second screen, fed by the PMX1 in slot 13
+uint32_t aristmk6_state::screen_update_top(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect)
+{
+	return m_pmx1_top->screen_update(screen, bitmap, cliprect);
 }
 
 void aristmk6_state::testIrq()
@@ -746,11 +787,15 @@ void aristmk6_state::eeprom_w(uint64_t data)
 
 uint64_t aristmk6_state::hwver_r()
 {
-	// hardware version/revison register
+	// hardware version/revison register, read once by the BIOS at 0x18a4 (us1)
 	// bit 0-3: acceptable values 0-2 (deadloop otherwise), if > 0 - add 4 to unk B3800000 registers offsets
-	// bit 4:   1 - to B24xxxxxx UARTs registers offsets will be added E0
-	// bit 5-8: unk, checked for (bit4 == 1 && bit5-8 == 1), if true set flag at C406E20
-	return 0;
+	// bit 4:   1 - to B24xxxxxx UARTs registers offsets will be added E0; also no PLX bring-up ("XP" path,
+	//          sets 0x0c406f9c in us1)
+	// bit 5-8: with bit 4 clear, a value of 1 sets 0x0c406fa4 in us1: 128MB PLX direct-master window at local
+	//          0x08000000, PMX1 BAR0s at PCI 0x08000000 / 0x0c000000, FPGA 0x12000158 = 4 and 0x12000160 = 6
+	//          instead of 0x12000130 = 1, and a second PMX1 (slot 13) counts as a video chip
+	// EXPERIMENT (dual PMX1): the value is set by the machine configuration
+	return m_hwver;
 }
 
 /*
@@ -767,24 +812,72 @@ uint64_t aristmk6_state::hwver_r()
 static constexpr u32 PMX_VRAM_BASE  = 0x04000000;   // VRAM as the BIOS addresses it (SH-4 areas masked off)
 static constexpr u32 PMX_KICK_ADDR  = 0x03c000b0;   // async kick register, as the BIOS addresses it
 
+// the BIOS (us1, 0x229d2) maps PCI configuration address 0x6000 (slot 12) to interrupt slot 0x19 = IRL3
+// pending bit 1, and 0x6800 (slot 13) to slot 0x18 = IRL3 pending bit 0
+template <int Bit>
 void aristmk6_state::pmx_irq_w(int state)
 {
 	if (state)
-		irl3pend0 |= 0x02;
+		irl3pend0 |= 1 << Bit;
 	else
-		irl3pend0 &= ~0x02;
+		irl3pend0 &= ~(1 << Bit);
 	testIrq();
 }
 
-u32 aristmk6_state::pmx_ring_locate()
+u32 aristmk6_state::pmx_ring_locate(u32 vram_base, u32 io_base)
 {
+	// the kick register is the PMX1's I/O register 0xb0, reached through the 0x03c00000 window alias
+	const u32 kick = PMX_KICK_ADDR + (io_base & 0xffff);
 	const u32 *const ram = reinterpret_cast<const u32 *>(&m_mainram[0]);
 	for (u32 i = 1; i < m_mainram.bytes() / 4 - 1; i++)
 	{
-		if (ram[i] == PMX_VRAM_BASE + pmx1_device::HLE_ASYNC_CTRL && ram[i + 1] == PMX_KICK_ADDR)
+		if (ram[i] == vram_base + pmx1_device::HLE_ASYNC_CTRL && ram[i + 1] == kick)
 			return ram[i - 1];
 	}
 	return 0;
+}
+
+/*
+    CPU area 1 (0x04000000-0x07ffffff) reaches the PLX direct-master memory window.
+
+    Single-video board: the BIOS sets a 64MB window at local 0x04000000; the local address is the CPU
+    address (OBSERVED: PMX1 BAR0 at PCI 0x04000000 is used at CPU 0x04000000).
+    EXPERIMENT (dual PMX1), HYPOTHESIS for the decode: on the dual-video variant the BIOS sets a 128MB
+    window at local 0x08000000 (DMRR 0xf8000000, DMLBAM 0x08000000), puts the BAR0s at PCI 0x08000000 and
+    0x0c000000, and translates those PCI addresses to CPU 0x04000000 and 0x06000000 (us1, 0x22734). It also
+    writes 4 to FPGA 0x12000158 and 6 to 0x12000160, the CPU address bits 27-24 of the two 32MB halves of
+    area 1. So the FPGA is taken to steer each 32MB half of area 1 to one of the two local 64MB blocks of the
+    window. Game ROM (area 2) and RAM (area 3) are other chip selects and are not affected.
+*/
+bool aristmk6_state::pci_window_offset(offs_t &offset) const
+{
+	if (!m_fpga_window[0] && !m_fpga_window[1])
+		return true;    // single window: offset is already window-relative
+
+	const u32 cpu = 0x04000000 + (offset << 2);
+	const u32 page = (cpu >> 24) & ~1;
+	u32 local;
+	if (page == m_fpga_window[0])
+		local = 0x08000000 | (cpu & 0x01ffffff);
+	else if (page == m_fpga_window[1])
+		local = 0x0c000000 | (cpu & 0x01ffffff);
+	else
+		return false;
+	offset = (local - 0x08000000) >> 2;
+	return true;
+}
+
+u32 aristmk6_state::pci_window_r(offs_t offset, u32 mem_mask)
+{
+	if (!pci_window_offset(offset))
+		return 0;
+	return m_plx->dm_mem_r(offset, mem_mask);
+}
+
+void aristmk6_state::pci_window_w(offs_t offset, u32 data, u32 mem_mask)
+{
+	if (pci_window_offset(offset))
+		m_plx->dm_mem_w(offset, data, mem_mask);
 }
 
 template <int N>
@@ -808,7 +901,7 @@ void aristmk6_state::aristmk6_map(address_map &map)
 {
 	map(0x00000000, 0x003fffff).rom().region("maincpu", 0);
 	// PLX PCI9054: direct-master memory window onto PCI memory (the PMX1 framebuffer is at PCI 0x04000000)
-	map(0x04000000, 0x07ffffff).rw(m_plx, FUNC(pci9054_device::dm_mem_r), FUNC(pci9054_device::dm_mem_w));
+	map(0x04000000, 0x07ffffff).rw(FUNC(aristmk6_state::pci_window_r), FUNC(aristmk6_state::pci_window_w));
 	map(0x08000000, 0x0bffffff).rom().region("game_rom", 0);
 	map(0x0c000000, 0x0cffffff).ram().share("mainram"); // Main RAM 16MB
 	map(0x10800000, 0x1087ffff).ram().share("sram0"); // SRAM0 512KB
@@ -828,6 +921,9 @@ void aristmk6_state::aristmk6_map(address_map &map)
 	map(0x12000138, 0x1200013f).rw(FUNC(aristmk6_state::codec_r), FUNC(aristmk6_state::codec_w)).umask64(0x00000000000000ff);
 	map(0x12000080, 0x12000087).nopw(); // 0-1-2 written here repeatedly, diag LED or smth ?
 	map(0x120000e0, 0x120000e7).r(FUNC(aristmk6_state::hwver_r));
+	// EXPERIMENT (dual PMX1): area 1 window steering, written only on the dual-video board variant
+	map(0x12000158, 0x1200015f).lw32(NAME([this] (u32 data) { m_fpga_window[0] = data & 0xff; })).umask64(0x00000000ffffffff);
+	map(0x12000160, 0x12000167).lw32(NAME([this] (u32 data) { m_fpga_window[1] = data & 0xff; })).umask64(0x00000000ffffffff);
 	map(0x120000e8, 0x12000107).r(FUNC(aristmk6_state::irqpend_r));
 	map(0x12000108, 0x12000127).w(FUNC(aristmk6_state::irqen_w));
 	map(0x12400000, 0x12400007).rw(m_uart3, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
@@ -927,9 +1023,9 @@ void aristmk6_state::aristmk6(machine_config &config)
 	ARISTMK6_PMX1(config, m_pmx);
 	pmx1_device &pmx1(m_pmx->core());
 	pmx1.set_host_vram_address(PMX_VRAM_BASE, 0x1fffffff);
-	pmx1.irq_cb().set(FUNC(aristmk6_state::pmx_irq_w));
+	pmx1.irq_cb().set(FUNC(aristmk6_state::pmx_irq_w<1>));
 	pmx1.host_read32().set([this] (offs_t offset) -> u32 { return m_maincpu->space(AS_PROGRAM).read_dword(offset); });
-	pmx1.ring_locate().set(FUNC(aristmk6_state::pmx_ring_locate));
+	pmx1.ring_locate().set([this] () -> u32 { return pmx_ring_locate(PMX_VRAM_BASE, m_pmx->bar_address(4)); });
 
 	SPEAKER(config, "speaker", 2).front();
 	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
@@ -949,6 +1045,35 @@ void aristmk6_state::aristmk6(machine_config &config)
 	screen.screen_vblank().set(pmx1, FUNC(pmx1_device::vblank_w));
 
 	PALETTE(config, m_palette).set_entries(0x1000);
+}
+
+/*
+    EXPERIMENT (dual PMX1): mainboard variant whose hardware version register selects the dual-video
+    set-up, with the PMC video board (a second PMX1, product 410535) in PCI slot 13 and its own screen.
+    Which hardware version value real dual-screen boards return is not known; 0x20 is the smallest value
+    that makes the us1 BIOS accept a second chip (bit 4 clear, bits 5-8 = 1, revision 0).
+*/
+static constexpr u32 PMX_TOP_VRAM_BASE = 0x06000000;   // second chip's VRAM as the BIOS addresses it
+
+void aristmk6_state::aristmk6_dual(machine_config &config)
+{
+	aristmk6(config);
+	m_hwver = 0x20;
+
+	ARISTMK6_PMX1(config, m_pmx_top);
+	pmx1_device &top(m_pmx_top->core());
+	top.set_host_vram_address(PMX_TOP_VRAM_BASE, 0x1fffffff);
+	top.irq_cb().set(FUNC(aristmk6_state::pmx_irq_w<0>));
+	top.host_read32().set([this] (offs_t offset) -> u32 { return m_maincpu->space(AS_PROGRAM).read_dword(offset); });
+	top.ring_locate().set([this] () -> u32 { return pmx_ring_locate(PMX_TOP_VRAM_BASE, m_pmx_top->bar_address(4)); });
+
+	screen_device &screen(SCREEN(config, "screen_top"));
+	screen.set_refresh_hz(60);
+	screen.set_vblank_time(ATTOSECONDS_IN_USEC(2500));  /* not accurate */
+	screen.set_size(640, 480);
+	screen.set_visarea(0, 640-1, 0, 480-1);
+	screen.set_screen_update(FUNC(aristmk6_state::screen_update_top));
+	screen.screen_vblank().set(top, FUNC(pmx1_device::vblank_w));
 }
 
 #define ROM_LOAD32_WORD_BIOS(bios, name, offset, length, hash) \
@@ -7161,7 +7286,7 @@ GAME( 2005, bigred2,    aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init
 GAME( 2002, blkbrum,    aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Black Brumby (1J009111, NSW/ACT)",              MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // JB010, C - 14/06/02
 GAME( 2006, blkmust,    blkbrum,  aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Black Mustang (0152584, US)",                   MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // JB014/21, (no data)
 GAME( 2007, bluetigr,   aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Blue Tiger (20259511, NSW/ACT)",                MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 855, A - 12/12/07
-GAME( 2007, bobdolly,   aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Bob and Dolly (0352298, US)",                   MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // US243, A - 10/15/07
+GAME( 2007, bobdolly,   aristmk6, aristmk6_dual, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Bob and Dolly (0352298, US)",                   MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // US243, A - 10/15/07
 GAME( 2005, brazil,     aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Brazil (20180311, NSW/ACT)",                    MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 783, B - 25/02/05
 GAME( 2006, brazila,    brazil,   aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Brazil (10218511, ASP)",                        MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 783, D - 02/05/06
 GAME( 2004, bucaneer,   aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Buccaneer (Aristocrat, 10173011, NSW/ACT)",     MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 765, A - 05/04/04
@@ -7298,7 +7423,7 @@ GAME( 2001, mnytreea,   mnytree,  aristmk6, aristmk6, aristmk6_state, empty_init
 GAME( 2004, moonfire,   indream,  aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Moon Fire - Jackpot Carnival (30164211, Queensland)", MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 628/3, E - 27/01/04
 GAME( 2007, moonwalt,   aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Moonlight Waltz (10227611, NSW/ACT)",           MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 814/1, B - 11/01/07
 GAME( 2006, mrwoo,      aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Mr Woo (30215311, NSW/ACT)",                    MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 810, K - 12/07/06
-GAME( 200?, mrwoou,     mrwoo,    aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Mr Woo (0252599, US)",                          MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // MV4276, (no data)
+GAME( 200?, mrwoou,     mrwoo,    aristmk6_dual, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Mr Woo (0252599, US)",                          MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // MV4276, (no data)
 GAME( 2005, mskitty,    aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Miss Kitty (10216611, NSW/ACT)",                MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 778, C - 18/04/05
 GAME( 2002, mystarr,    aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Mystic Arrow (0151009, US)",                    MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // US005, A - 01/07/02
 GAME( 2001, mysteycm,   aristmk6, aristmk6, aristmk6, aristmk6_state, empty_init, ROT0, "Aristocrat", "Mystic Eyes - Mr. Cashman (10008111, NSW/ACT)", MACHINE_NOT_WORKING | MACHINE_NO_SOUND ) // 675, A- 09/05/01
