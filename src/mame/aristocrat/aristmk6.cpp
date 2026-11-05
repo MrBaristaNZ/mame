@@ -1017,8 +1017,10 @@ void aristmk6_state::aristmk6(machine_config &config)
 
 	EEPROM_93C56_16BIT(config, m_eeprom0).default_value(0xff);
 
-	// PCI bus: the PLX PCI9054 is the host bridge, the PMX1 answers configuration cycles as device 12
-	PCI_ROOT(config, "pci");
+	// PCI bus: there is no host bridge, the SH-4 masters the bus through the PLX PCI9054 direct-master windows;
+	// the PMX1 answers configuration cycles as device 12 (where the 9054 itself sits is not known, the BIOS
+	// never addresses it)
+	PCI_ROOT(config, "pci").set_hostless();
 	PCI9054(config, m_plx);
 	ARISTMK6_PMX1(config, m_pmx);
 	pmx1_device &pmx1(m_pmx->core());
