@@ -77,7 +77,7 @@ Product numbers: 410174, 410175
 Note: NSW/ACT games only - MK5 and MK6 hardware use the same board
 
 U1: Unknown 20-pin socketed PLCC marked 563072-A
-U3: TL16C452FN
+U3: TL16C452FN (BIOS UARTs 4 and 5 at 0x13400000 / 0x13400008)
 
 
 MKV VLC Comms Inlet Board
@@ -255,6 +255,7 @@ public:
 		m_uart1(*this, "uart1"),
 		m_uart2(*this, "uart2"),
 		m_uart3(*this, "uart3"),
+		m_lab_uart(*this, "lab_uart%u", 0U),
 		m_dmadac(*this, "dmadac%u", 0U),
 		m_eeprom0(*this, "eeprom0"),
 		m_palette(*this, "palette"),
@@ -274,6 +275,7 @@ private:
 	uint8_t irqpend_r(offs_t offset);
 	void irqen_w(offs_t offset, uint8_t data);
 	uint8_t test_r(offs_t offset);
+	double coin_ms() const;
 	void eeprom_w(uint64_t data);
 	uint64_t hwver_r();
 	uint32_t screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
@@ -346,6 +348,7 @@ private:
 	required_device<ns16550_device> m_uart1;
 	required_device<ns16550_device> m_uart2;
 	required_device<ns16550_device> m_uart3;
+	required_device_array<ns16450_device, 2> m_lab_uart;
 	required_device_array<dmadac_sound_device, 2> m_dmadac;
 	required_device<eeprom_serial_93cxx_device> m_eeprom0;
 	required_device<palette_device> m_palette;
@@ -602,30 +605,36 @@ void aristmk6_state::irqen_w(offs_t offset, uint8_t data)
 	}
 }
 
+double aristmk6_state::coin_ms() const
+{
+	// time since the last coin, in ms
+	return (m_coin_time == attotime::never) ? 1.0e6 : (machine().time() - m_coin_time).as_double() * 1000.0;
+}
+
 uint8_t aristmk6_state::test_r(offs_t offset)
 {
-	static int flip;
-
 	switch (offset)
 	{
 	case 0:
-		flip ^= 2;
-		// bit 1 read in various places, status for something...
+		// bit 1 = main board fan tacho: the BIOS (fan.c) samples it every 1 ms and takes edges per second x 15 as
+		// the RPM, so two pulses per turn; au-nsw1 reports Cooling Fan Failed below 2000 RPM
+		// HYPOTHESIS: a fan turning at 6000 RPM (200 Hz); the emulated sampling hook runs at about 1.5 kHz, so the
+		// BIOS reads about 3950 RPM, above its 3000 RPM recovery level
 		// bits 2-4 = CC-62 coin acceptor sense, credit, alarm, idle high; bit 5 = diverter position
 		// a coin is a sense pulse followed by a credit pulse
+		// bit 0 = CC16 coin acceptor credit line (cid.c, NSW BIOSes), idle low, a 3-50 ms high pulse per coin
 		{
-			u8 lines = 0x1d | (m_diverter << 5);
-			if (m_coin_time != attotime::never)
-			{
-				const double ms = (machine().time() - m_coin_time).as_double() * 1000.0;
-				if (ms < 20.0)
-					lines &= ~0x04;
-				else if (ms >= 30.0 && ms < 50.0)
-					lines &= ~0x08;
-				else if (ms >= 60.0)
-					m_coin_time = attotime::never;
-			}
-			return flip | lines;
+			u8 lines = 0x1c | (m_diverter << 5);
+			const double ms = coin_ms();
+			if (ms < 20.0)
+				lines &= ~0x04;
+			else if (ms >= 30.0 && ms < 50.0)
+				lines &= ~0x08;
+			else if (ms >= 100.0)
+				m_coin_time = attotime::never;
+			if (ms < 30.0)
+				lines |= 0x01;
+			return (BIT(machine().time().as_ticks(400), 0) << 1) | lines;
 		}
 	case 1:
 		// bits 0-4 = key switches (active low), bit 5 = EEPROM data out
@@ -638,7 +647,17 @@ uint8_t aristmk6_state::test_r(offs_t offset)
 	case 4:
 		return 0;
 	case 5:
-		return 0x0d;
+		// cid.c optics, idle high: bit 0 coin-in optic, bits 3 then 2 cash box optics A and B, which a coin
+		// passes in that order after the CC16 credit pulse (B before A is a yo-yo error)
+		{
+			u8 lines = 0x0d;
+			const double ms = coin_ms();
+			if (ms >= 40.0 && ms < 70.0)
+				lines &= ~0x08;
+			if (ms >= 55.0 && ms < 85.0)
+				lines &= ~0x04;
+			return lines;
+		}
 	default:
 		logerror("Unmapped read %08x\n", 0x13800000 + offset);
 	}
@@ -931,6 +950,9 @@ void aristmk6_state::aristmk6_map(address_map &map)
 	map(0x12400010, 0x12400017).rw(m_uart1, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
 	map(0x12400018, 0x1240001f).rw(m_uart0, FUNC(ns16550_device::ins8250_r), FUNC(ns16550_device::ins8250_w));
 	map(0x13000000, 0x130001ff).rw(m_plx, FUNC(pci9054_device::local_r), FUNC(pci9054_device::local_w));
+	// MKV LAB comms board (NSW/ACT); the BIOS checks the scratch registers to see whether it is fitted
+	map(0x13400000, 0x13400007).rw(m_lab_uart[0], FUNC(ns16450_device::ins8250_r), FUNC(ns16450_device::ins8250_w));
+	map(0x13400008, 0x1340000f).rw(m_lab_uart[1], FUNC(ns16450_device::ins8250_r), FUNC(ns16450_device::ins8250_w));
 	map(0x13800000, 0x13800007).r(FUNC(aristmk6_state::test_r));
 	// PLX direct-master I/O / configuration window
 	map(0x13c00000, 0x13c0ffff).rw(m_plx, FUNC(pci9054_device::dm_io_r), FUNC(pci9054_device::dm_io_w));
@@ -958,7 +980,8 @@ static INPUT_PORTS_START( aristmk6 )
 	PORT_BIT( 0x08, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Cash Box Door") PORT_CODE(KEYCODE_B) PORT_TOGGLE
 	PORT_BIT( 0x10, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Main Door") PORT_CODE(KEYCODE_M) PORT_TOGGLE
 	PORT_BIT( 0x20, IP_ACTIVE_HIGH, IPT_OTHER ) PORT_NAME("Note Acceptor Door") PORT_CODE(KEYCODE_N) PORT_TOGGLE
-	PORT_BIT( 0xc0, IP_ACTIVE_HIGH, IPT_UNUSED )
+	PORT_BIT( 0x40, IP_ACTIVE_LOW, IPT_UNUSED ) // belly panel door: 0 gives Belly Panel Door Detected on au-nsw1 with the option off (HYPOTHESIS: 1 = no door fitted)
+	PORT_BIT( 0x80, IP_ACTIVE_HIGH, IPT_UNUSED )
 
 	PORT_START("COIN")
 	PORT_BIT( 0x01, IP_ACTIVE_HIGH, IPT_COIN1 ) PORT_CODE(KEYCODE_5) PORT_CODE(KEYCODE_5_PAD) PORT_CODE(KEYCODE_I) PORT_CHANGED_MEMBER(DEVICE_SELF, FUNC(aristmk6_state::coin_inserted), 0)
@@ -1014,6 +1037,10 @@ void aristmk6_state::aristmk6(machine_config &config)
 
 	microtouch_device &microtouch(MICROTOUCH(config, "microtouch", 9600));
 	microtouch.stx().set(m_uart3, FUNC(ns16550_device::rx_w));
+
+	// MKV LAB comms board TL16C452: clock and interrupt line not known, nothing is connected to the ports
+	NS16450(config, m_lab_uart[0], 1.8432_MHz_XTAL);
+	NS16450(config, m_lab_uart[1], 1.8432_MHz_XTAL);
 
 	EEPROM_93C56_16BIT(config, m_eeprom0).default_value(0xff);
 
