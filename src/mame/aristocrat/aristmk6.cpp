@@ -1013,8 +1013,8 @@ void aristmk6_state::aristmk6(machine_config &config)
 	/* basic machine hardware */
 	SH7750(config, m_maincpu, ARISTMK6_CPU_CLOCK);
 	m_maincpu->set_md(0, 1);
-	m_maincpu->set_md(1, 0);
-	m_maincpu->set_md(2, 1);
+	m_maincpu->set_md(1, 1);
+	m_maincpu->set_md(2, 0);
 	m_maincpu->set_md(3, 0);
 	m_maincpu->set_md(4, 0);
 	m_maincpu->set_md(5, 1);
