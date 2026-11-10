@@ -1004,9 +1004,8 @@ static INPUT_PORTS_START( aristmk6 )
 	PORT_BIT( 0x8000, IP_ACTIVE_HIGH, IPT_BUTTON14 ) PORT_NAME("Service") PORT_CODE(KEYCODE_Y)
 INPUT_PORTS_END
 
-// ?
-static constexpr XTAL ARISTMK6_CPU_CLOCK = 200_MHz_XTAL;
-// ?
+// 33 MHz oscillator into EXTAL; clock mode 3 (MD2-MD0 = 011) gives CPU x6, bus x2, peripheral x1
+static constexpr XTAL ARISTMK6_CPU_CLOCK = 33_MHz_XTAL * 6;
 
 void aristmk6_state::aristmk6(machine_config &config)
 {
