@@ -611,6 +611,9 @@ double aristmk6_state::coin_ms() const
 	return (m_coin_time == attotime::never) ? 1.0e6 : (machine().time() - m_coin_time).as_double() * 1000.0;
 }
 
+// main board fan tacho: 120 Hz at two pulses per turn is a 3600 RPM fan, well above the 2000 and 3000 RPM fail and recovery levels
+static constexpr unsigned ARISTMK6_FAN_TACHO_HZ = 120;
+
 uint8_t aristmk6_state::test_r(offs_t offset)
 {
 	switch (offset)
@@ -618,8 +621,7 @@ uint8_t aristmk6_state::test_r(offs_t offset)
 	case 0:
 		// bit 1 = main board fan tacho: the BIOS (fan.c) samples it every 1 ms and takes edges per second x 15 as
 		// the RPM, so two pulses per turn; au-nsw1 reports Cooling Fan Failed below 2000 RPM
-		// HYPOTHESIS: a fan turning at 6000 RPM (200 Hz); the emulated sampling hook runs at about 1.5 kHz, so the
-		// BIOS reads about 3950 RPM, above its 3000 RPM recovery level
+		// the tacho is a square wave of ARISTMK6_FAN_TACHO_HZ, so the BIOS reads about 3600 RPM
 		// bits 2-4 = CC-62 coin acceptor sense, credit, alarm, idle high; bit 5 = diverter position
 		// a coin is a sense pulse followed by a credit pulse
 		// bit 0 = CC16 coin acceptor credit line (cid.c, NSW BIOSes), idle low, a 3-50 ms high pulse per coin
@@ -634,7 +636,7 @@ uint8_t aristmk6_state::test_r(offs_t offset)
 				m_coin_time = attotime::never;
 			if (ms < 30.0)
 				lines |= 0x01;
-			return (BIT(machine().time().as_ticks(400), 0) << 1) | lines;
+			return (BIT(machine().time().as_ticks(ARISTMK6_FAN_TACHO_HZ * 2), 0) << 1) | lines;
 		}
 	case 1:
 		// bits 0-4 = key switches (active low), bit 5 = EEPROM data out
