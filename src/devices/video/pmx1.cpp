@@ -190,7 +190,7 @@ constexpr u32 ROUTINE_BLTB = 0x279110;   // blit with per-pixel alpha; if word 2
 constexpr u32 ROUTINE_FILL = 0x278534;   // solid rectangle
 constexpr u32 ROUTINE_TEXT = 0x273454;   // string of 1bpp glyphs
 constexpr u32 ROUTINE_LINE = 0x276d58;   // one pixel wide line
-constexpr u32 ROUTINE_COPY = 0x273770;   // word 2 = count, then (source, destination, bytes)
+constexpr u32 ROUTINE_COPY = 0x273770;   // word 2 = count, then count (source, destination, bytes)
 constexpr u32 ROUTINE_SYNC = 0x271c00;   // writes word 3 to address word 2; later words are stale ring data
 
 } // anonymous namespace
@@ -478,7 +478,8 @@ void pmx1_device::process_ring()
 			break;
 
 		case ROUTINE_COPY:
-			for (u32 i = 0; i < w(2) && i < 3; i++)
+			// one triple per animated symbol cell (up to 7 seen); the last word of the packet is not part of one
+			for (u32 i = 0, n = std::min<u32>(w(2), (size / 4 - 4) / 3); i < n; i++)
 			{
 				const u32 src = vram_offset(w(3 + i * 3));
 				const u32 dst = vram_offset(w(4 + i * 3));
