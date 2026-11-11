@@ -386,7 +386,7 @@ void aristmk6_state::machine_start()
 	for (auto &dac : m_dmadac)
 	{
 		dac->enable(1);
-		dac->set_frequency(getenv("MK6_AUDIO_RATE") ? atof(getenv("MK6_AUDIO_RATE")) : 5'500'000.0 / 256); // temporary: listening test
+		dac->set_frequency(getenv("MK6_AUDIO_RATE") ? atof(getenv("MK6_AUDIO_RATE")) : 5'500'000.0 / 512); // 5.5 MHz MCLK / 512 = 10742 Hz (owner and sho-gun1 by ear; FINDINGS 2026-11-11)
 		dac->set_volume(0x100);
 	}
 	m_audio_timer = timer_alloc(FUNC(aristmk6_state::audio_tick), this);
@@ -437,7 +437,7 @@ void aristmk6_state::machine_reset()
 	memset(m_codec_regs, 0, sizeof(m_codec_regs));
 	codec_update_volume();
 	m_audio_channel = 0;
-	const attotime audio_period = getenv("MK6_AUDIO_RATE") ? attotime::from_hz(atof(getenv("MK6_AUDIO_RATE"))) * 512 : attotime::from_ticks(512 * 256, 5'500'000); // temporary: listening test
+	const attotime audio_period = getenv("MK6_AUDIO_RATE") ? attotime::from_hz(atof(getenv("MK6_AUDIO_RATE"))) * 512 : attotime::from_ticks(512 * 512, 5'500'000); // 5.5 MHz MCLK / 512 = 10742 Hz, same rate as the DAC
 	m_audio_timer->adjust(audio_period, 0, audio_period);
 }
 
