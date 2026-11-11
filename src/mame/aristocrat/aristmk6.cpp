@@ -290,6 +290,7 @@ private:
 	uint8_t codec_r();
 	void codec_w(uint8_t data);
 	TIMER_CALLBACK_MEMBER(audio_dma);
+	static constexpr int AUDIO_FIFO_DEPTH = 12;
 	template <int N> void uart_int_w(int state);
 
 	// SPI I/O bus controller in the FPGA
@@ -313,6 +314,9 @@ private:
 	u8 m_codec_out = 3;
 	u8 m_codec_sda = 1;
 	u8 m_audio_channel = 1;
+	u64 m_audio_fifo[AUDIO_FIFO_DEPTH]{};
+	u8 m_audio_fifo_count = 0;
+	u8 m_audio_holdoff = 0;
 	emu_timer *m_audio_timer = nullptr;
 	attotime m_coin_time = attotime::never;
 	u8 irl3pend0 = 0, irl3en0 = 0;
@@ -372,6 +376,9 @@ void aristmk6_state::machine_start()
 	save_item(NAME(m_codec_sda));
 	save_item(NAME(m_fpga_window));
 	save_item(NAME(m_audio_channel));
+	save_item(NAME(m_audio_fifo));
+	save_item(NAME(m_audio_fifo_count));
+	save_item(NAME(m_audio_holdoff));
 	m_audio_timer = timer_alloc(FUNC(aristmk6_state::audio_dma), this);
 
 	// the touch screen is a player 2 device by default, with keys that clash with the button panel: use the
@@ -416,6 +423,8 @@ void aristmk6_state::machine_reset()
 	m_spi_channel = m_spi_pos = m_spi_rx = 0;
 	m_spi_timer->adjust(attotime::never);
 	m_audio_channel = 1;
+	m_audio_fifo_count = 0;
+	m_audio_holdoff = 0;
 	const attotime period = attotime::from_hz(m_dac->sample_rate()) * 4;
 	m_audio_timer->adjust(period, 0, period);
 }
@@ -734,20 +743,49 @@ void aristmk6_state::codec_w(uint8_t data)
 
 TIMER_CALLBACK_MEMBER(aristmk6_state::audio_dma)
 {
-	// stay on one channel until it has no more data, then take the other
-	u64 data;
-	if (!m_maincpu->sh4_dma_external_read(m_audio_channel, &data, 1))
+	// The FPGA keeps a small FIFO between the DMA channel and the DAC.  The BIOS re-arms a channel from its
+	// end-of-transfer interrupt and converts the start of the next buffer only after that, so the first
+	// units after a re-arm are not valid yet: read ahead of the DAC and stay off the channel for a while
+	// after it completes, so that the DAC is fed from the FIFO meanwhile.
+
+	// the DAC takes the oldest unit
+	if (m_audio_fifo_count)
 	{
-		m_audio_channel ^= 2;
-		if (!m_maincpu->sh4_dma_external_read(m_audio_channel, &data, 1))
-			return;
+		const u64 data = m_audio_fifo[0];
+		std::copy(m_audio_fifo + 1, m_audio_fifo + m_audio_fifo_count, m_audio_fifo);
+		m_audio_fifo_count--;
+		for (int i = 0; i < 4; i++)
+		{
+			const s16 sample = s16(data >> (i * 16));
+			m_dac->write(0, sample);
+			m_dac->write(1, sample);
+		}
 	}
 
-	for (int i = 0; i < 4; i++)
+	if (m_audio_holdoff)
 	{
-		const s16 sample = s16(data >> (i * 16));
-		m_dac->write(0, sample);
-		m_dac->write(1, sample);
+		m_audio_holdoff--;
+		return;
+	}
+
+	// refill the FIFO, up to two units per tick; stay on one channel until it has no more data, then take the other
+	for (int n = 0; n < 2 && m_audio_fifo_count < AUDIO_FIFO_DEPTH; n++)
+	{
+		u64 data;
+		if (!m_maincpu->sh4_dma_external_read(m_audio_channel, &data, 1))
+		{
+			m_audio_channel ^= 2;
+			if (!m_maincpu->sh4_dma_external_read(m_audio_channel, &data, 1))
+				return;
+		}
+		m_audio_fifo[m_audio_fifo_count++] = data;
+
+		// the channel just finished: give the BIOS time to refill it while the FIFO drains
+		if (m_maincpu->space(AS_PROGRAM).read_dword(0xffa00008 + m_audio_channel * 0x10) == 0)
+		{
+			m_audio_holdoff = AUDIO_FIFO_DEPTH - 1;
+			return;
+		}
 	}
 }
 
