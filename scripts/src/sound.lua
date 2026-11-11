@@ -286,6 +286,20 @@ end
 
 
 ---------------------------------------------------
+-- Cirrus Logic CS4341 Stereo DAC
+--@src/devices/sound/cs4341.h,SOUNDS["CS4341"] = true
+---------------------------------------------------
+
+if (SOUNDS["CS4341"]~=null) then
+	files {
+		MAME_DIR .. "src/devices/sound/cs4341.cpp",
+		MAME_DIR .. "src/devices/sound/cs4341.h",
+	}
+end
+
+
+
+---------------------------------------------------
 -- Creative Labs CT1741 SB16 DSP
 --@src/devices/sound/ct1741.h,SOUNDS["CT1741"] = true
 ---------------------------------------------------

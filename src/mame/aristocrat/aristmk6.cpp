@@ -131,7 +131,7 @@ Crown Melbourne uses regular ASP software.
 #include "machine/nvram.h"
 #include "machine/pci.h"
 #include "machine/pci9054.h"
-#include "sound/dmadac.h"
+#include "sound/cs4341.h"
 #include "video/pmx1.h"
 #include "emupal.h"
 #include "screen.h"
@@ -256,7 +256,7 @@ public:
 		m_uart2(*this, "uart2"),
 		m_uart3(*this, "uart3"),
 		m_lab_uart(*this, "lab_uart%u", 0U),
-		m_dmadac(*this, "dmadac%u", 0U),
+		m_dac(*this, "dac"),
 		m_eeprom0(*this, "eeprom0"),
 		m_palette(*this, "palette"),
 		m_mainram(*this, "mainram"),
@@ -289,8 +289,7 @@ private:
 	bool pci_window_offset(offs_t &offset) const;
 	uint8_t codec_r();
 	void codec_w(uint8_t data);
-	void codec_update_volume();
-	TIMER_CALLBACK_MEMBER(audio_tick);
+	TIMER_CALLBACK_MEMBER(audio_dma);
 	template <int N> void uart_int_w(int state);
 
 	// SPI I/O bus controller in the FPGA
@@ -311,14 +310,9 @@ private:
 	u8 m_uart_irq = 0;
 	u8 m_door_strobe = 0;
 	u8 m_diverter = 0;
-	u8 m_i2c_out = 3;                 // lines driven by the CPU: bit 0 SDA, bit 1 SCL
-	u8 m_i2c_bit = 0;
-	u8 m_i2c_byte = 0;
-	u8 m_i2c_shift = 0;
-	u8 m_i2c_reg = 0;
-	u8 m_i2c_ack = 0;
-	u8 m_codec_regs[8]{};
-	u8 m_audio_channel = 0;
+	u8 m_codec_out = 3;
+	u8 m_codec_sda = 1;
+	u8 m_audio_channel = 1;
 	emu_timer *m_audio_timer = nullptr;
 	attotime m_coin_time = attotime::never;
 	u8 irl3pend0 = 0, irl3en0 = 0;
@@ -349,7 +343,7 @@ private:
 	required_device<ns16550_device> m_uart2;
 	required_device<ns16550_device> m_uart3;
 	required_device_array<ns16450_device, 2> m_lab_uart;
-	required_device_array<dmadac_sound_device, 2> m_dmadac;
+	required_device<cs4341_device> m_dac;
 	required_device<eeprom_serial_93cxx_device> m_eeprom0;
 	required_device<palette_device> m_palette;
 	required_shared_ptr<uint64_t> m_mainram;
@@ -374,22 +368,11 @@ void aristmk6_state::machine_start()
 	save_item(NAME(m_uart_irq));
 	save_item(NAME(m_door_strobe));
 	save_item(NAME(m_diverter));
-	save_item(NAME(m_i2c_out));
-	save_item(NAME(m_i2c_bit));
-	save_item(NAME(m_i2c_byte));
-	save_item(NAME(m_i2c_shift));
-	save_item(NAME(m_i2c_reg));
-	save_item(NAME(m_i2c_ack));
-	save_item(NAME(m_codec_regs));
+	save_item(NAME(m_codec_out));
+	save_item(NAME(m_codec_sda));
 	save_item(NAME(m_fpga_window));
 	save_item(NAME(m_audio_channel));
-	for (auto &dac : m_dmadac)
-	{
-		dac->enable(1);
-		dac->set_frequency(getenv("MK6_AUDIO_RATE") ? atof(getenv("MK6_AUDIO_RATE")) : 5'500'000.0 / 512); // 5.5 MHz MCLK / 512 = 10742 Hz (owner and sho-gun1 by ear; FINDINGS 2026-11-11)
-		dac->set_volume(0x100);
-	}
-	m_audio_timer = timer_alloc(FUNC(aristmk6_state::audio_tick), this);
+	m_audio_timer = timer_alloc(FUNC(aristmk6_state::audio_dma), this);
 
 	// the touch screen is a player 2 device by default, with keys that clash with the button panel: use the
 	// first mouse or light gun instead
@@ -432,13 +415,9 @@ void aristmk6_state::machine_reset()
 	memset(m_spi_frames, 0, sizeof(m_spi_frames));
 	m_spi_channel = m_spi_pos = m_spi_rx = 0;
 	m_spi_timer->adjust(attotime::never);
-	m_i2c_out = 3;
-	m_i2c_bit = m_i2c_byte = m_i2c_shift = m_i2c_reg = m_i2c_ack = 0;
-	memset(m_codec_regs, 0, sizeof(m_codec_regs));
-	codec_update_volume();
-	m_audio_channel = 0;
-	const attotime audio_period = getenv("MK6_AUDIO_RATE") ? attotime::from_hz(atof(getenv("MK6_AUDIO_RATE"))) * 512 : attotime::from_ticks(512 * 512, 5'500'000); // 5.5 MHz MCLK / 512 = 10742 Hz, same rate as the DAC
-	m_audio_timer->adjust(audio_period, 0, audio_period);
+	m_audio_channel = 1;
+	const attotime period = attotime::from_hz(m_dac->sample_rate()) * 4;
+	m_audio_timer->adjust(period, 0, period);
 }
 
 uint32_t aristmk6_state::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect)
@@ -730,73 +709,46 @@ TIMER_CALLBACK_MEMBER(aristmk6_state::spi_done)
     per output sample, and their rate is 5.5 MHz / 256. An I2C chip at address 0x20 on 0x12000138 has setup registers and a volume at register 3.
 */
 
+/*
+    Audio: the BIOS mixer writes 1024 mono 16-bit samples per buffer to main RAM, four to each 64-bit
+    word, and DMA channels 1 and 3 (on-demand data transfer mode, external request) hand the two buffers
+    in turn to the FPGA, which sends them to the CS4341 DAC.  With a 5.5 MHz MCLK and LRCK = MCLK / 256
+    the output is 21484 Hz, the rate of the WAV files in the game ROMs, which the mixer plays one stored
+    sample per output sample.  Only AOUTA is wired to the amplifier; each sample is assumed to go to
+    both DAC channels.
+*/
+
 uint8_t aristmk6_state::codec_r()
 {
-	return m_i2c_out & (m_i2c_ack ? ~1 : ~0);
+	return m_codec_out & (m_codec_sda | 2);
 }
 
 void aristmk6_state::codec_w(uint8_t data)
 {
-	const u8 old = m_i2c_out;
-	m_i2c_out = data & 3;
-
-	if (BIT(old, 1) && BIT(m_i2c_out, 1))
-	{
-		if (BIT(old, 0) && !BIT(m_i2c_out, 0))   // start
-			m_i2c_bit = m_i2c_byte = 0;
-	}
-	else if (!BIT(old, 1) && BIT(m_i2c_out, 1))  // clock rises
-	{
-		if (m_i2c_bit < 8)
-		{
-			m_i2c_shift = (m_i2c_shift << 1) | BIT(m_i2c_out, 0);
-			m_i2c_bit++;
-		}
-		else
-		{
-			m_i2c_ack = 1;
-			m_i2c_bit = 0;
-			if (m_i2c_byte == 1)
-				m_i2c_reg = m_i2c_shift & 7;
-			else if (m_i2c_byte >= 2)
-			{
-				const u8 reg = m_i2c_reg++ & 7;
-				m_codec_regs[reg] = m_i2c_shift;
-				if (reg == 3)
-					codec_update_volume();
-			}
-			m_i2c_byte++;
-		}
-	}
-	else if (BIT(old, 1) && !BIT(m_i2c_out, 1))  // clock falls
-		m_i2c_ack = 0;
+	m_codec_out = data & 3;
+	if (!BIT(data, 1))
+		m_dac->scl_write(0);
+	m_dac->sda_write(BIT(data, 0));
+	m_dac->scl_write(BIT(data, 1));
 }
 
-// register 3: bit 7 mute, bits 0-6 attenuation in dB (the BIOS table runs 0, 1, 2, 3, 4, 6, 8, 10, 14, 20, 90)
-void aristmk6_state::codec_update_volume()
+TIMER_CALLBACK_MEMBER(aristmk6_state::audio_dma)
 {
-	const u8 value = m_codec_regs[3];
-	const u16 volume = BIT(value, 7) ? 0 : u16(0x100 * pow(10.0, -double(value & 0x7f) / 20.0) + 0.5);
-	for (auto &dac : m_dmadac)
-		dac->set_volume(volume);
-}
+	// stay on one channel until it has no more data, then take the other
+	u64 data;
+	if (!m_maincpu->sh4_dma_external_read(m_audio_channel, &data, 1))
+	{
+		m_audio_channel ^= 2;
+		if (!m_maincpu->sh4_dma_external_read(m_audio_channel, &data, 1))
+			return;
+	}
 
-TIMER_CALLBACK_MEMBER(aristmk6_state::audio_tick)
-{
-	// channels 1 and 3 form a double buffer: the mixer refills whichever one finished last
-	u64 buffer[256];
-	const int channel = m_audio_channel ? 3 : 1;
-	const u32 words = m_maincpu->sh4_dma_external_read(channel, buffer, 256);
-	if (words == 0)
-		return;
-	m_audio_channel ^= 1;
-
-	s16 samples[512 * 2];
-	for (u32 i = 0; i < words; i++)
-		for (int j = 0; j < 4; j++)
-			samples[i * 4 + j] = s16(buffer[i] >> (j * 16));
-	m_dmadac[0]->transfer(0, 1, 2, words * 2, samples);
-	m_dmadac[1]->transfer(1, 1, 2, words * 2, samples);
+	for (int i = 0; i < 4; i++)
+	{
+		const s16 sample = s16(data >> (i * 16));
+		m_dac->write(0, sample);
+		m_dac->write(1, sample);
+	}
 }
 
 void aristmk6_state::eeprom_w(uint64_t data)
@@ -1057,9 +1009,11 @@ void aristmk6_state::aristmk6(machine_config &config)
 	pmx1.host_read32().set([this] (offs_t offset) -> u32 { return m_maincpu->space(AS_PROGRAM).read_dword(offset); });
 	pmx1.ring_locate().set([this] () -> u32 { return pmx_ring_locate(PMX_VRAM_BASE, m_pmx->bar_address(4)); });
 
-	SPEAKER(config, "speaker", 2).front();
-	DMADAC(config, m_dmadac[0]).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
-	DMADAC(config, m_dmadac[1]).add_route(ALL_OUTPUTS, "speaker", 1.0, 1);
+	SPEAKER(config, "mono").front_center();
+	CS4341(config, m_dac, 33_MHz_XTAL / 6); // MCLK from the FPGA, assumed to be the 66 MHz bus clock / 12
+	m_dac->set_mclk_ratio(256);
+	m_dac->sda_callback().set([this] (int state) { m_codec_sda = state; });
+	m_dac->add_route(0, "mono", 1.0);
 
 	NVRAM(config, "sram0", nvram_device::DEFAULT_ALL_0);
 	NVRAM(config, "sram1", nvram_device::DEFAULT_ALL_0);

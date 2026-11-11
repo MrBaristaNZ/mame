@@ -12,7 +12,7 @@ No ROMs are included or linked. You need your own dumps of the sets in MAME's `a
 
 ## Known issues
 
-- Sound: the rate is set by `MK6_AUDIO_RATE` for now; this branch defaults to 10742 Hz. Thanks to sho-gun1 for reporting it ran at double speed.
+- Sound: now plays at its real rate (21484 Hz mono, through the new CS4341 DAC device). Thanks to sho-gun1 for reporting it ran at double speed.
 - Touch screen games (for example 5koi) can't finish setup yet.
 - Some games need buttons the default panel doesn't have (for example beavbuk), and on NSW games some button names don't match the cabinet.
 - Queensland and NZ games need a comms link that isn't emulated.
