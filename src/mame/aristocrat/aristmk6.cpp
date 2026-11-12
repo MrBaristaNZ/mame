@@ -125,6 +125,7 @@ Crown Melbourne uses regular ASP software.
 
 #include "emu.h"
 #include "cpu/sh/sh4.h"
+#include "machine/ds1302.h"
 #include "machine/eepromser.h"
 #include "machine/ins8250.h"
 #include "machine/microtch.h"
@@ -253,6 +254,7 @@ public:
 		m_pmx1_top(*this, "pci:0d.0:pmx1"),
 		m_uart0(*this, "uart0"),
 		m_uart1(*this, "uart1"),
+		m_rtc(*this, "rtc"),
 		m_uart2(*this, "uart2"),
 		m_uart3(*this, "uart3"),
 		m_lab_uart(*this, "lab_uart%u", 0U),
@@ -277,6 +279,8 @@ private:
 	uint8_t test_r(offs_t offset);
 	double coin_ms() const;
 	void eeprom_w(uint64_t data);
+	uint8_t rtc_r();
+	void rtc_w(uint8_t data);
 	uint64_t hwver_r();
 	uint32_t screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
 	uint32_t screen_update_top(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
@@ -344,6 +348,7 @@ private:
 	optional_device<pmx1_device> m_pmx1_top;
 	required_device<ns16550_device> m_uart0;
 	required_device<ns16550_device> m_uart1;
+	required_device<ds1302_device> m_rtc;
 	required_device<ns16550_device> m_uart2;
 	required_device<ns16550_device> m_uart3;
 	required_device_array<ns16450_device, 2> m_lab_uart;
@@ -796,6 +801,21 @@ void aristmk6_state::eeprom_w(uint64_t data)
 	m_eeprom0->clk_write((data & 0x02) ? ASSERT_LINE : CLEAR_LINE);
 }
 
+// DS1302, bit-banged by the BIOS: bit 0 I/O (reads back the pin), bit 1 SCLK, bit 2 CE,
+// bit 3 drives the I/O line (clear while the BIOS reads a byte)
+uint8_t aristmk6_state::rtc_r()
+{
+	return m_rtc->io_r();
+}
+
+void aristmk6_state::rtc_w(uint8_t data)
+{
+	m_rtc->ce_w(BIT(data, 2));
+	if (BIT(data, 3))
+		m_rtc->io_w(BIT(data, 0));
+	m_rtc->sclk_w(BIT(data, 1));
+}
+
 uint64_t aristmk6_state::hwver_r()
 {
 	// hardware version/revison register, read once by the BIOS at 0x18a4 (us1)
@@ -919,7 +939,7 @@ void aristmk6_state::aristmk6_map(address_map &map)
 	map(0x11000000, 0x1107ffff).ram().share("sram1"); // SRAM1 512KB
 	map(0x11800000, 0x1187ffff).ram().share("sram2"); // SRAM2 512KB
 // 12000xxx main control registers area
-//  map(0x12000000, another eeprom or SPI bus
+	map(0x12000000, 0x12000007).rw(FUNC(aristmk6_state::rtc_r), FUNC(aristmk6_state::rtc_w)).umask64(0x00000000000000ff);
 	map(0x12000010, 0x12000017).w(FUNC(aristmk6_state::eeprom_w));
 	map(0x12000018, 0x1200001f).rw(FUNC(aristmk6_state::spi_data_r), FUNC(aristmk6_state::spi_data_w)).umask64(0x00000000000000ff);
 	map(0x12000020, 0x12000027).w(FUNC(aristmk6_state::spi_channel_w)).umask64(0x00000000000000ff);
@@ -1034,6 +1054,8 @@ void aristmk6_state::aristmk6(machine_config &config)
 	NS16450(config, m_lab_uart[1], 1.8432_MHz_XTAL);
 
 	EEPROM_93C56_16BIT(config, m_eeprom0).default_value(0xff);
+
+	DS1302(config, m_rtc, 32.768_kHz_XTAL);
 
 	// PCI bus: there is no host bridge, the SH-4 masters the bus through the PLX PCI9054 direct-master windows;
 	// the PMX1 answers configuration cycles as device 12 (where the 9054 itself sits is not known, the BIOS
