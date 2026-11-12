@@ -1,0 +1,52 @@
+name: Game report
+description: Tell us how an MK6 set ran on the mk6-play branch
+title: "[game] <set name>: <works / problem>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. Please don't attach, upload or link ROMs or NVRAM files from ROM sets.
+        The status of every set is in docs/mk6_games.md on the mk6-play branch.
+  - type: input
+    id: set
+    attributes:
+      label: Set name
+      description: The MAME short name, for example bigben or tiktorch
+    validations:
+      required: true
+  - type: input
+    id: bios
+    attributes:
+      label: BIOS
+      description: For example us1, set-us1 or au-nsw1
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: How far did it get?
+      options:
+        - Plays (takes coins, spins, pays)
+        - Plays, with a problem
+        - Reaches the game but can't be set up
+        - Stops at boot
+        - Doesn't start in MAME
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, and any message on screen. The operator menu's machine error log helps.
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: mk6-play commit
+      description: Output of `git log --oneline -1` in your checkout
+  - type: textarea
+    id: shots
+    attributes:
+      label: Screenshots
+      description: Paste or drag them in (MAME's F12 saves one)

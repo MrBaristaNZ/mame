@@ -6,14 +6,16 @@ No ROMs are included or linked. You need your own dumps of the sets in MAME's `a
 
 ## What works (tested by me, Nov 2026)
 
-- 60 US games tested from set-up saves: 59 take coins, spin and pay. afterhrs stops at a touch-screen feature, and jefffox at a touch bonus. Most need setting up once with the setchip BIOS first (below). Mr Cashman family games (5c per credit) need about 25 coins before the first spin.
+- 61 US games tested from set-up saves, and all 61 take coins, spin and pay. Touch features and bonuses (afterhrs, jefffox) are played with the mouse. Most need setting up once with the setchip BIOS first (below). Mr Cashman family games (5c per credit) need about 25 coins before the first spin.
 - 11 NSW (Australian) games play, set up from their own operator menu: amzqueen, bigben, bigbena, bigheart, gldnflc, 50lionrr, 100lions, 5dragsp, aduskcm, alchemy, amztempl.
-- bobdolly and mrwoou (two-screen games) boot with their top screens (not played yet).
+- bobdolly and mrwoou (two-screen games) boot with their top screens, but stop on a video error.
+
+The status of every set, including the 178 that boot to their game screen but nobody has set up and played yet, is in [docs/mk6_games.md](docs/mk6_games.md). Those are where testing helps most.
 
 ## Known issues
 
 - Sound: now plays at its real rate (21484 Hz mono, through the new CS4341 DAC device). Thanks to sho-gun1 for reporting it ran at double speed.
-- Touch screen games (for example 5koi) can't finish setup yet.
+- Touch works in play (with the mouse), but games that need touch during setup (for example 5koi) can't finish it yet.
 - Some games need buttons the default panel doesn't have (for example beavbuk), and on NSW games some button names don't match the cabinet.
 - Queensland and NZ games need a comms link that isn't emulated.
 - Some US sets fail setup or have bad dumps.
@@ -46,7 +48,7 @@ With 300+ sets there's far more to test than I can do alone, so reports are very
 ## Status in MAME
 
 Merged: SH-4 timer fixes (#16681, #16716), hostless PCI root (#16724), SH-4 clocks (#16806).
-Open: PLX PCI9054 (#16744), DS1302 clock (#16745).
+Open: PLX PCI9054 (#16744), DS1302 clock (#16745), SH-4 DMA for sound (#16829), save states (#16834), set comment fixes (#16839).
 Next: PMX1 graphics device, sound, inputs and NSW hardware, touch, button panels, set fixes, then working flags.
 
 This work is done with AI help (Claude, Anthropic), and every PR says so.
