@@ -24,37 +24,40 @@ Boot the game on `us1` with any save. Turn the Operator key on (`O`), wait about
 
 ## 3. Games by type
 
-Status means: **works** = scripted or manual setchip plus the game played a spin with fault bitmap 0 (local tests, 2026-11-06/07). **fails** = "EEPROM error" under every tried set-up. **untested** = no setchip tried. "Cashout presses" count from Multi-Line Game. Missouri = $2 buys 40 credits. Nevada = $0.05 is 1 credit.
+Status means: **works** = the setchip was run on that game, and the game took coins and played a spin with fault bitmap 0 (local tests, 2026-11-06/07, and a survey of every US set on 2026-11-13). **fails** = "EEPROM error" under every set-up tried. Section 5 lists every US set one by one. "Cashout presses" count from Multi-Line Game. Missouri = $2 buys 40 credits. Nevada = $0.05 is 1 credit.
 
 | Machine ID line | Game type (Cashout presses) | Gameplay Setup | Jurisdiction | Example sets | Status |
 |---|---|---|---|---|---|
 | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 lines. Bets per line not recorded (page says 10; unverified) | Missouri and Nevada | tiktorch, afterhrs, dbldolphu, geishajc, sunmoon | works (about 23 sets play from a tiktorch or own save; Missouri gave 22 plays and 1 inconclusive) |
 | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 lines, bets per line 5 | Missouri | atkgld, venice, blkmust, trsking, frogwld | works (12 of 12 in Missouri run) |
-| 10 Credit Multiplier/15 Line Multiline | 15-Line Game (11) presumed | presumed 15 lines, bets per line 10 | unknown | gldgongu | untested |
+| 10 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 lines, bets per line 10 (the default) | Missouri | gldgongu | works (a progressive game: after the RAM reset a Progressive Jackpot Edit screen appears; Bet 3 saves it) |
 | 10 Credit Multiplier/3125-Way (50 bet) Multiway | Super Reel Power Game (50) (21) | none recorded | Missouri | asnprinc, gwnn | works (gwnn set up by hand, passed the check) |
 | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | Bets per Line 8 (the default) | Nevada and Missouri | goldincu, deltabel, hrtantny, wingolyu | works |
-| same line, 8 credit | as above | as above | none worked | bobdolly | **fails** (page Variation 05; Variation 5 did not help) |
+| same line, 8 credit | as above | as above | none worked | bobdolly | **fails** (the EEPROM check rejects every set-up tried: Reel Power 25 with Variation 5, Link Progressive, Ante 5) |
 | 5 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | Bets per Line 5 | Nevada and Missouri | centrion, shamnmgu, silkrda6u | works (max bet 125) |
-| same line, 5 credit | as above | as above | none worked | 5dragce | **fails** (page Variation 05) |
-| 8 Credit Multiplier/243-Way (25 bet) (pennyar, pompeia6u, pompeia6ua, whalecshu) | see Notes | not recorded | Missouri | pennyar, pompeia6u, pompeia6ua, whalecshu | works with the asnprinc save; correct type unverified |
+| same line, 5 credit | as above | as above | none worked | 5dragce | **fails** (Reel Power 25/30/40/50, Super Reel Power 30/50, Variation 99 and 5, Ante 5: all rejected) |
+| 8 Credit Multiplier/243-Way (25 bet) (pennyar, pompeia6u, pompeia6ua, whalecshu) | Reel Power Game (25) (14) | Bets per Line 8 (the default) | Missouri | pennyar, pompeia6u, pompeia6ua, whalecshu | works (they also play on the Super Reel Power 50 save) |
 | 4, 8 or 10 Credit Multiplier/50 Line Multiline | Multi-Line Game (0) | Number of Lines **"50 (2/credit)"** (Bet 1 x4), not plain "50" (x5). Bets per Line = page multiplier | Nevada and Missouri | 50lionsu, magforst, stardrftu (4); lineking, pelipeteu (8); bucaneeru (10) | works |
 | 20 CR Multiplier/20 Line Multiline (maximum bet 500 credits) | Cashman Game (25) (12) | default (25 lines, bets per line 20) | **Nevada only** (Missouri fails; Variation 1 is not in the Missouri list) | arwincm, betzoo, eggsrccm, jefffox, jewelcm, pandpays | works (min bet 25, max 500) |
 | 20 Credit Multiplier/25 Line Multiline | Multi-Line Game (0) | 25 lines, 20 credits per line | Missouri | deepfrzu | works (Variation 3 and 99 both worked) |
-| 20 CR Multiplier/20 Line Multiline (maximum bet 500 credits) | Cashman Game presumed | untested | unknown | mysteycmu | untested |
-| 5 CR Multiplier/20 Line Multiline (maximum bet 150 credits) | unknown | unknown | unknown | cinhell, mrwoou, zorroa6u | untested |
-| 5 Credit Multiplier/20 Line Multiline; 2 Credit Multiplier/20 Line Multiline | unknown | unknown | unknown | scatmag3; wldafr | untested |
-| 5 Credit Multiplier/25 Line Multiline | unknown | unknown | unknown | metestrm | untested |
-| 5 Cr Multiplier/40 Cr Reel Power (200 Cr Max Bet); 5 Credit Multiplier/40 Credit Reelpower | Reel Power Game (40) is a guess (index 16) | unknown | unknown | buffalou; timbwolf | untested |
-| 5 Credit Multiplier/5 Line Multiline | tried Arishinko, 5-Line Game, Multi-Line 5x5 | tried lines 5 x 1, 5 x 5, 5 x 10 | none worked | arish | **fails** (swhr2a6 shows the same line, untested) |
-| 1 Credit Multiplier/3 Line Multiline | unknown | unknown | unknown | sunqndol | untested |
+| 20 CR Multiplier/20 Line Multiline (maximum bet 500 credits) | Cashman Game (25) (12) | default | **Missouri**, Variation 99 (Nevada Variation 1, the arwincm set-up, is rejected) | mysteycmu | works |
+| 5 CR Multiplier/20 Line Multiline (maximum bet 150 credits) | Cashman Game (30) (13) | default (30 lines, bets per line 20) | Nevada, Variation 1 | cinhell; mrwoou, zorroa6u | cinhell works; mrwoou and zorroa6u **fail** (they reject the cinhell set-up, Missouri, and Multi-Line 20 x 10) |
+| 5 Credit Multiplier/20 Line Multiline; 2 Credit Multiplier/20 Line Multiline | Multi-Line Game (0) | 20 lines (Bet 1 x2), bets per line 10 (default) | Missouri | scatmag3; wldafr | scatmag3 works; wldafr **fails** (rejects the same set-up, Nevada, and Variation changes) |
+| 5 Credit Multiplier/25 Line Multiline | Multi-Line Game (0) | 25 lines (Bet 1 x3), bets per line 10 (default; 3 is rejected) | Missouri | metestrm | works |
+| 5 Cr Multiplier/40 Cr Reel Power (200 Cr Max Bet); 5 Credit Multiplier/40 Credit Reelpower | Reel Power Game (40) (16) | Bets per Line 5 (Bet 2 once from 10) | Missouri | buffalou; timbwolf | works. timbwolf's game panel differs: RAM reset is Main Door + Bet 2 + Bet 1 |
+| 5 Credit Multiplier/5 Line Multiline | Multi-Line Game (0) (5-Line Game is rejected) | 5 lines (Bet 2 once), bets per line 10 (default) | Missouri | swhr2a6; arish | swhr2a6 works; arish **fails** (rejects the same set-up, 5-Line Game and Arishinko) |
+| 1 Credit Multiplier/3 Line Multiline | tried 3-Line Game (1) and 3-Line Game (Dollar Storm) | 3 lines x 1 | Missouri and Nevada tried | sunqndol | **fails**. Dollar Storm can only be set up through the UPI key panel |
+| (multi-game, no Machine ID page) | BaseX / Multi-Game (UPI) clears its "Process startup" stop | | Missouri and Nevada tried | pwsuper | **fails** (reaches its game-select screen, then "EEPROM error") |
 
 Notes on the table:
 
-- The 9-line and 15-line saves for most sets were copies of one game's setchip save, followed by a RAM reset. Setting each game up by hand with the same type is the supported route.
-- Contradiction: pennyar, pompeia6u, pompeia6ua and whalecshu show the 243-Way (25 bet) line, but they played from the `asnprinc` (Super Reel Power 50) save, while the other 243-way sets used Reel Power (25). Which type they need is not settled.
+- The setchip's output does not depend on the game: the same settings give a byte-identical `eeprom0` on different sets (checked on every family, 2026-11-13). So a save copied from another game of the same type is the same set-up, and a RAM reset is all it needs.
+- Bets per Line is a maximum, and must be at least the "N Credit Multiplier" on the Machine Identification page: metestrm rejects 25 lines x 3 and accepts 25 x 10. The default is always high enough on the sets above.
+- Changing Lines or Bets per Line can change the setchip key panel (the labels on screen change). Read the labels after each change.
+- arish, wldafr, mrwoou and zorroa6u reject a set-up that is byte-identical to one that works for another game with the same ID line (swhr2a6, scatmag3, cinhell). So these games check something beyond type, lines, bets, jurisdiction and Variation. What that is is not known yet.
 - Machine ID text alone does not always predict a working set-up. Variation (Miscellaneous Options, Bet 5 steps down, Bet 1 up) may be part of the check.
 - The key panel changes with game type. For Reel Power, the tests used the panel button labelled Bet 5 to enter and clear. For Cashman the clear is Service plus a different button. Read the on-screen labels.
-- Not tried: other setchip BIOSes (`set-us2` to `set-us4`), other jurisdictions for the failing games, and Payout Setup and Bill Validator options.
+- Not tried: other setchip BIOSes (`set-us2` to `set-us4`), and Payout Setup and Bill Validator options.
 
 ## 4. Errors
 
@@ -64,3 +67,95 @@ Notes on the table:
 | YOU MUST OPEN THE LOGIC DOOR TO SAVE | Press `Z`, then Bet 5 again. |
 | Memory Error (first run on `us1`) | Normal before the RAM reset. |
 | Please setup Game Machine Options | The set-up passed. Do the Game Machine Options step (step 11). |
+
+## 5. Every US set
+
+From a survey of all 85 US sets on 2026-11-13: 69 work, 8 fail, 8 are bad dumps that can't boot. Every row uses Target Version 6.03.04, the `_41` to `_27` copy, the RAM reset and Game Machine Options (section 2). Variation is the setchip default unless the row says otherwise (99, or 1 for Cashman on Nevada).
+
+| Set | Machine ID line | Game type (Cashout presses) | Lines | Bets per line | Jurisdiction | Variation | Result |
+|---|---|---|---|---|---|---|---|
+| 50lionsu | 4 Credit Multiplier/50 Line Multiline | Multi-Line Game (0) | "50 (2/credit)" (Bet 1 x4) | 4 | Missouri ($2 = 40) | 99 | works |
+| 5dragce | 5 Credit Multiplier/243-Way (25 bet) Multiway |  |  |  |  |  | **fails**: EEPROM error |
+| adonisa6 | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| afterhrs | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| apocof |  |  |  |  |  |  | bad dump, can't boot |
+| arabnga6u | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| arish | 5 Credit Multiplier/5 Line Multiline |  |  |  |  |  | **fails**: EEPROM error |
+| arwincm | 20 CR Multiplier/20 Line Multiline(maximum bet 500 credits) | Cashman Game (25) (12) | 25 lines CM (20 + Cashman) | 20 (default) | Nevada (5c = 1) | 1 | works. Missouri fails (Variation 1 not in its list) |
+| asnprinc | 10 Credit Multiplier/3125-Way (50 bet) Multiway | Super Reel Power Game (50) (21) | 3125 ways (fixed) | default | Missouri ($2 = 40) | 99 | works |
+| atkgld | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| betzoo | 20 CR Multiplier/20 Line Multiline(maximum bet 500 credits) | Cashman Game (25) (12) | 25 lines CM (20 + Cashman) | 20 (default) | Nevada (5c = 1) | 1 | works |
+| blkmust | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| bmbugs | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| bobdolly | 8 Credit Multiplier/243-Way (25 bet) Multiway |  |  |  |  |  | **fails**: EEPROM error |
+| bucaneeru | 10 Credit Multiplier/50 Line Multiline | Multi-Line Game (0) | "50 (2/credit)" (Bet 1 x4) | 10 | Missouri ($2 = 40) | 99 | works |
+| buffalou | 5 Cr Multiplier/40 Cr Reel Power (200 Cr Max Bet) | Reel Power Game (40) (16) | 40 credit reel power (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works (new) |
+| centrion | 5 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 5 (Bet 2 x3 from 8) | Missouri ($2 = 40) | 99 | works |
+| cinhell | 5 CR Multiplier/20 Line Multiline(maximum bet 150 credits) | Cashman Game (30) (13) | 30 lines CM (20 + Cashman) | 20 (default) | Nevada (5c = 1) | 1 | works (new) |
+| cryspriu | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| dagenta6 | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| dbldolphu | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| deepfrzu | 20 Credit Multiplier/25 Line Multiline | Multi-Line Game (0) | 25 | 20 | Missouri ($2 = 40) | 99 | works. Variation 3 and 99 both worked |
+| deltabel | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works |
+| dimeyece | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| dimeyeu | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| eaglrock | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| eastland | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| efce |  |  |  |  |  |  | bad dump, can't boot |
+| eggsrccm | 20 CR Multiplier/20 Line Multiline(maximum bet 500 credits) | Cashman Game (25) (12) | 25 lines CM (20 + Cashman) | 20 (default) | Nevada (5c = 1) | 1 | works |
+| flamolce | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| flamoljc | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| frogwld | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| gbmoney | N/A | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| geishajc | N/A | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| gldgongu | 10 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 10 (default) | Missouri ($2 = 40) | 99 | works (new). Progressive game: after the RAM reset a Progressive Jackpot Edit screen appears; Bet 3 Credits saves it and goes on |
+| goldincu | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works |
+| gwnn | 10 Credit Multiplier/3125-Way (50 bet) Multiway | Super Reel Power Game (50) (21) | 3125 ways (fixed) | default | Missouri ($2 = 40) | 99 | works |
+| hlntroyu | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| hrtantny | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works |
+| jefffox | 20 CR Multiplier/20 Line Multiline(maximum bet 500 credits) | Cashman Game (25) (12) | 25 lines CM (20 + Cashman) | 20 (default) | Nevada (5c = 1) | 1 | works. Same set-up as arwincm |
+| jewelcm | 20 CR Multiplier/20 Line Multiline(maximum bet 500 credits) | Cashman Game (25) (12) | 25 lines CM (20 + Cashman) | 20 (default) | Nevada (5c = 1) | 1 | works |
+| lemrol | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| lineking | 8 Credit Multiplier/50 Line Multiline | Multi-Line Game (0) | "50 (2/credit)" (Bet 1 x4) | 8 | Missouri ($2 = 40) | 99 | works |
+| lovestuk |  |  |  |  |  |  | bad dump, can't boot |
+| magforst | 4 Credit Multiplier/50 Line Multiline | Multi-Line Game (0) | "50 (2/credit)" (Bet 1 x4) | 4 | Missouri ($2 = 40) | 99 | works |
+| magmerm | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| metestrm | 5 Credit Multiplier/25 Line Multiline | Multi-Line Game (0) | 25 (Bet 1 x3) | 10 (default) | Missouri ($2 = 40) | 99 | works (new). 25 x 3 rejected (bets per line below the page's 5) |
+| mrwoou | 5 CR Multiplier / 20 Line Multiline ( max bet 150 credits ) |  |  |  |  |  | **fails**: EEPROM error |
+| mystarr | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| mysteycmu | 20 CR Multiplier/20 Line Multiline(maximum bet 500 credits) | Cashman Game (25) (12) | 25 lines CM (20 + Cashman) | 20 (default) | Missouri ($2 = 40) | 99 | works (new). Nevada Variation 1 (the arwincm setup) is rejected; Missouri Variation 99 works |
+| opsesam |  |  |  |  |  |  | bad dump, can't boot |
+| pandpays | 20 CR Multiplier/20 Line Multiline(maximum bet 500 credits) | Cashman Game (25) (12) | 25 lines CM (20 + Cashman) | 20 (default) | Nevada (5c = 1) | 1 | works |
+| parislgtu | N/A | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| pcockmagu | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| pelipeteu | 8 Credit Multiplier/50 Line Multiline | Multi-Line Game (0) | "50 (2/credit)" (Bet 1 x4) | 8 | Missouri ($2 = 40) | 99 | works |
+| pengpyce | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| pennyar | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works. also plays on the asnprinc Super Reel Power (50) save |
+| pompeia6u | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works. also plays on the asnprinc Super Reel Power (50) save |
+| pompeia6ua | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works. also plays on the asnprinc Super Reel Power (50) save |
+| pwsuper | (multi-game; no Machine ID page reached) |  |  |  |  |  | **fails**: EEPROM error |
+| roadtrip |  |  |  |  |  |  | bad dump, can't boot |
+| scatmag3 | 5 Credit Multiplier/20 Line Multiline | Multi-Line Game (0) | 20 (Bet 1 x2) | 10 (default) | Missouri ($2 = 40) | 99 | works (new) |
+| sctmagce | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| sealdeal | N/A | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| shamnmgu | 5 Credit Multiplier/243-Way (25 bet) Multiway (125Cr Max Bet) | Reel Power Game (25) (14) | 243 ways (fixed) | 5 (Bet 2 x3 from 8) | Missouri ($2 = 40) | 99 | works |
+| shorthng | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| silkrda6u | 5 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 5 (Bet 2 x3 from 8) | Missouri ($2 = 40) | 99 | works |
+| stardrftu | 4 Credit Multiplier/50 Line Multiline | Multi-Line Game (0) | "50 (2/credit)" (Bet 1 x4) | 4 | Missouri ($2 = 40) | 99 | works |
+| statsymb | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| sunmonbb |  |  |  |  |  |  | bad dump, can't boot |
+| sunmoon | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| sunmoona | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| sunqndol | 1 Credit Multiplier/3 Line Multiline |  |  |  |  |  | **fails**: EEPROM error |
+| swhr2a6 | 5 Credit Multiplier/5 Line Multiline | Multi-Line Game (0) | 5 (Bet 2 x1) | 10 (default) | Missouri ($2 = 40) | 99 | works (new). 5-Line Game (1) is rejected |
+| tiktorch | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| timbwolf | 5 Credit Multiplier/40 Credit Reelpower | Reel Power Game (40) (16) | 40 credit reel power (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works (new). Game panel differs: operator menu Bet 1 next / Bet 3 choose / Service back; RAM reset = Main Door + Bet 2 + Bet 1 |
+| trsking | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| venice | 5 Credit Multiplier/15 Line Multiline | 15-Line Game (11) | 15 (fixed) | 5 (Bet 2 x1 from 10) | Missouri ($2 = 40) | 99 | works |
+| whalecshu | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works. also plays on the asnprinc Super Reel Power (50) save |
+| whalecshua |  |  |  |  |  |  | bad dump, can't boot |
+| whtwater | 10 Credit Multiplier/9 Line Multiline | Multi-Line Game (0) | 9 (default) | 10 (default) | Missouri ($2 = 40) | 99 | works |
+| wingolyu | 8 Credit Multiplier/243-Way (25 bet) Multiway | Reel Power Game (25) (14) | 243 ways (fixed) | 8 (default) | Missouri ($2 = 40) | 99 | works |
+| wldafr | 2 Credit Multiplier/20 Line Multiline |  |  |  |  |  | **fails**: EEPROM error |
+| wldpanth |  |  |  |  |  |  | bad dump, can't boot |
+| zorroa6u | 5 CR Multiplier / 20 Line Multiline ( max bet 150 credits ) |  |  |  |  |  | **fails**: EEPROM error |

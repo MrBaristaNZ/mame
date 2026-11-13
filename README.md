@@ -6,7 +6,7 @@ No ROMs are included or linked. You need your own dumps of the sets in MAME's `a
 
 ## What works (tested by me, Nov 2026)
 
-- 61 US games tested from set-up saves, and all 61 take coins, spin and pay. Touch features and bonuses (afterhrs, jefffox) are played with the mouse. Most need setting up once with the setchip BIOS first (below). Mr Cashman family games (5c per credit) need about 25 coins before the first spin.
+- 69 of the 85 US sets take coins, spin and pay. Touch features and bonuses (afterhrs, jefffox) are played with the mouse. They need setting up once with the setchip BIOS first (below); `docs/mk6_setchip_guide.md` section 5 gives the setup for every US set. 8 US sets are bad dumps, and 8 reject every setup tried so far. Mr Cashman family games (5c per credit) need about 25 coins before the first spin.
 - 11 NSW (Australian) games play, set up from their own operator menu: amzqueen, bigben, bigbena, bigheart, gldnflc, 50lionrr, 100lions, 5dragsp, aduskcm, alchemy, amztempl.
 - bobdolly and mrwoou (two-screen games) boot with their top screens, but stop on a video error.
 
@@ -18,7 +18,7 @@ The status of every set, including the 178 that boot to their game screen but no
 - Touch works in play (with the mouse), but games that need touch during setup (for example 5koi) can't finish it yet.
 - Some games need buttons the default panel doesn't have (for example beavbuk), and on NSW games some button names don't match the cabinet.
 - Queensland and NZ games need a comms link that isn't emulated.
-- Some US sets fail setup or have bad dumps.
+- 8 US sets reject every setchip setup tried ("EEPROM error"), and 8 are bad dumps (see the guide).
 
 ## Building
 

@@ -2,41 +2,39 @@
 
 What has been tried on `mk6-play`, set by set. "Boots to the game" means it reached its game screen in a headless boot test with blank settings on an earlier build (Nov 2026), nothing more: those, and the "Not tried yet" sets, are the ones that most need testers. If you play one, please open an issue (see the README) and this list gets updated.
 
-Last updated 2026-11-12.
+Last updated 2026-11-13.
 
 | Status | Sets |
 |---|---|
 | Boots to the game; not set up or played yet | 178 |
-| Plays (coins, spins, pays) | 72 |
+| Plays (coins, spins, pays) | 80 |
 | No ROM dump known | 30 |
 | Needs the comms link (not emulated yet) | 13 |
-| Not tried yet | 10 |
-| Problem (see the set) | 6 |
+| Problem (see the set) | 10 |
 | Bad dump | 8 |
 | Incomplete dump (half the game ROM missing) | 7 |
 | Two-screen game, second video card not emulated for it yet | 6 |
-| Stops at boot | 4 |
-| Two screens show, stops on an error | 1 |
+| Stops at boot | 3 |
 
 | Set | Game | Region | Status |
 |---|---|---|---|
 | 50lionsu | 50 Lions | US | Plays (coins, spins, pays) |
-| 5dragce | 5 Dragons - Cash Express | US | Problem: setchip setup fails |
+| 5dragce | 5 Dragons - Cash Express | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5) |
 | adonisa6 | Adonis | US | Plays (coins, spins, pays) |
 | afterhrs | After Hours | US | Plays. The drink feature starts from a Bet button (same or lower bet); on a cabinet it may be a touch choice (unconfirmed) |
 | apocof | Apollo Coffee | US | Bad dump: a ROM needs redumping |
 | arabnga6u | Arabian Nights | US | Plays (coins, spins, pays) |
-| arish | Arishinko | US | Problem: setchip setup fails |
+| arish | Arishinko | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5) |
 | arwincm | Arctic Wins - Mr. Cashman | US | Plays (coins, spins, pays) |
 | asnprinc | Asian Princess | US | Plays (coins, spins, pays) |
 | atkgld | All the King's Gold | US | Plays (coins, spins, pays) |
 | betzoo | Betting Zoo - Mr. Cashman | US | Plays (coins, spins, pays) |
 | blkmust | Black Mustang | US | Plays (coins, spins, pays) |
 | bmbugs | Bumble Bugs | US | Plays (coins, spins, pays) |
-| bobdolly | Bob and Dolly | US | Problem: two screens; stops on a scene error (v_object.c: Invalid scene entry), setchip setup fails |
-| buffalou | Buffalo | US | Not tried yet |
+| bobdolly | Bob and Dolly | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5); two-screen game |
+| buffalou | Buffalo | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
 | centrion | Centurion | US | Plays (coins, spins, pays) |
-| cinhell | Chance in Hell - Lil' Lucy | US | Not tried yet |
+| cinhell | Chance in Hell - Lil' Lucy | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
 | cryspriu | Crystal Springs | US | Plays (coins, spins, pays) |
 | dagenta6 | Double Agent | US | Plays (coins, spins, pays) |
 | dbldolphu | Double Dolphins | US | Plays (coins, spins, pays) |
@@ -53,7 +51,7 @@ Last updated 2026-11-12.
 | frogwld | Frog Wild 2 | US | Plays (coins, spins, pays) |
 | gbmoney | The Good, The Bad & The Money | US | Plays (coins, spins, pays) |
 | geishajc | Geisha - Jackpot Carnival | US | Plays (coins, spins, pays) |
-| gldgongu | The Golden Gong | US | Not tried yet |
+| gldgongu | The Golden Gong | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
 | goldincu | Golden Incas | US | Plays (coins, spins, pays) |
 | gwnn | The Game With No Name! | US | Plays (coins, spins, pays) |
 | hlntroyu | Helen of Troy | US | Plays (coins, spins, pays) |
@@ -65,10 +63,10 @@ Last updated 2026-11-12.
 | lovestuk | Love Stuck | US | Bad dump: AVL media checksum error at boot |
 | magforst | Magic Forest | US | Plays (coins, spins, pays) |
 | magmerm | Magic Mermaid | US | Plays (coins, spins, pays) |
-| metestrm | Meteor Storm | US | Not tried yet |
-| mrwoou | Mr Woo | US | Two screens show, but stops on a sprite error (v_object.c: Invalid sprite entry) |
+| metestrm | Meteor Storm | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
+| mrwoou | Mr Woo | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5); two-screen game |
 | mystarr | Mystic Arrow | US | Plays (coins, spins, pays) |
-| mysteycmu | Mystic Eyes - Mr. Cashman | US | Not tried yet |
+| mysteycmu | Mystic Eyes - Mr. Cashman | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
 | opsesam | Open Sesame | US | Bad dump: a game ROM has no good dump (Game EPROM not present) |
 | pandpays | Panda Pays - Mr. Cashman | US | Plays (coins, spins, pays) |
 | parislgtu | Paris Lights - Jackpot Carnival | US | Plays (coins, spins, pays) |
@@ -78,9 +76,9 @@ Last updated 2026-11-12.
 | pennyar | Penny Arcade | US | Plays (coins, spins, pays) |
 | pompeia6u | Pompeii | US | Plays (coins, spins, pays) |
 | pompeia6ua | Pompeii | US | Plays (coins, spins, pays) |
-| pwsuper | Player's World - Super | US | Stops at boot after the ROM checks (Process startup) |
+| pwsuper | Player's World - Super | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5) |
 | roadtrip | Road Trip | US | Bad dump: AVL media checksum error at boot |
-| scatmag3 | Scatter Magic III | US | Not tried yet |
+| scatmag3 | Scatter Magic III | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
 | sctmagce | Scatter Magic - Cash Express | US | Plays (coins, spins, pays) |
 | sealdeal | Seal The Deal - Jackpot Carnival | US | Plays (coins, spins, pays) |
 | shamnmgu | Shaman's Magic | US | Plays (coins, spins, pays) |
@@ -91,19 +89,19 @@ Last updated 2026-11-12.
 | sunmonbb | Sun & Moon - Bank Buster | US | Bad dump: AVL media checksum error at boot |
 | sunmoon | Sun & Moon | US | Plays (coins, spins, pays) |
 | sunmoona | Sun & Moon | US | Plays (coins, spins, pays) |
-| sunqndol | Sun Queen - Dollar Storm | US | Not tried yet |
-| swhr2a6 | Sweethearts II | US | Not tried yet |
+| sunqndol | Sun Queen - Dollar Storm | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5) |
+| swhr2a6 | Sweethearts II | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
 | tiktorch | Tiki Torch | US | Plays (coins, spins, pays) |
-| timbwolf | Timber Wolf | US | Not tried yet |
+| timbwolf | Timber Wolf | US | Plays (coins, spins, pays). New 2026-11-13: setup in the setchip guide, section 5 |
 | trsking | Treasure King | US | Plays (coins, spins, pays) |
 | venice | Venice | US | Plays (coins, spins, pays) |
 | whalecshu | Whales of Cash | US | Plays (coins, spins, pays) |
 | whalecshua | Whales of Cash | US | Bad dump: AVL media checksum error at boot |
 | whtwater | White Water | US | Plays (coins, spins, pays) |
 | wingolyu | Wings over Olympus | US | Plays (coins, spins, pays) |
-| wldafr | Wild Africa - Millioniser | US | Problem: graphics look wrong |
+| wldafr | Wild Africa - Millioniser | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5); on a borrowed save the graphics looked wrong |
 | wldpanth | Wild Panthers - Lil' Lucy | US | Bad dump: AVL media checksum error at boot |
-| zorroa6u | Zorro | US | Not tried yet |
+| zorroa6u | Zorro | US | Problem: every setchip setup tried gives "EEPROM error" (guide section 5) |
 | 100lions | 100 Lions | NSW/ACT | Plays (coins, spins, pays) |
 | 50lionrr | 50 Lions - Roaring Riches | NSW/ACT | Plays (coins, spins, pays) |
 | 50lions | 50 Lions | NSW/ACT | Boots to the game; not set up or played yet |
