@@ -2652,13 +2652,22 @@ inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, int
 	tdata = &bitmap.pix(y, xxl);
 	wbufline = &wbuffer[y][xxl];
 
+	// most spans have the same colors at both ends, so the colors only need converting once
+	const bool flat =
+			(dbdx[0] == 0) && (dbdx[1] == 0) && (dbdx[2] == 0) && (dbdx[3] == 0) &&
+			(dodx[0] == 0) && (dodx[1] == 0) && (dodx[2] == 0) && (dodx[3] == 0);
+	uint32_t offset_color = float_argb_to_packed_argb(offl);
+	uint32_t base_color = float_argb_to_packed_argb(bl);
+
 	while(xxl < xxr) {
 		if((wl >= *wbufline)) {
 			uint32_t c;
 			float u = ul/wl;
 			float v = vl/wl;
-			uint32_t offset_color = float_argb_to_packed_argb(offl);
-			uint32_t base_color = float_argb_to_packed_argb(bl);
+			if (!flat) {
+				offset_color = float_argb_to_packed_argb(offl);
+				base_color = float_argb_to_packed_argb(bl);
+			}
 			c = (this->*sample_fn)(ti, u, v, offset_color, base_color);
 			if (group_no == DISPLAY_LIST_OPAQUE) {
 				*tdata = c;
@@ -2676,9 +2685,11 @@ inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, int
 		ul += dudx;
 		vl += dvdx;
 		wl += dwdx;
-		for (idx = 0; idx < 4; idx++) {
-			bl[idx] += dbdx[idx];
-			offl[idx] += dodx[idx];
+		if (!flat) {
+			for (idx = 0; idx < 4; idx++) {
+				bl[idx] += dbdx[idx];
+				offl[idx] += dodx[idx];
+			}
 		}
 		xxl ++;
 	}
