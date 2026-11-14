@@ -1572,7 +1572,7 @@ void naomi_state::naomi_port(address_map &map)
 void dc_state::dc_audio_map(address_map &map)
 {
 	map.unmap_value_high();
-	map(0x00000000, 0x007fffff).rw(FUNC(naomi_state::soundram_r), FUNC(naomi_state::soundram_w));                /* shared with SH-4 */
+	map(0x00000000, 0x007fffff).rw(FUNC(dc_state::soundram32_r), FUNC(dc_state::soundram32_w));                  /* shared with SH-4 */
 	map(0x00800000, 0x00807fff).rw(FUNC(dc_state::dc_arm_aica_r), FUNC(dc_state::dc_arm_aica_w));
 //  map(0x00810000, 0x0081000b) accessed by spkrbtl, RTC? AICA mirror?
 }
