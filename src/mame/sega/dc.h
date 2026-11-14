@@ -71,6 +71,8 @@ public:
 	void maple_irq(uint8_t data);
 	uint16_t soundram_r(offs_t offset);
 	void soundram_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
+	uint32_t soundram32_r(offs_t offset);
+	void soundram32_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	void aica_irq(int state);
 	void sh4_aica_irq(int state);
 	void external_irq(int state);
