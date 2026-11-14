@@ -649,6 +649,20 @@ void dc_state::soundram_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 	COMBINE_DATA(&dc_sound_ram[offset]);
 }
 
+// the ARM7 sees the same RAM 32 bits at a time
+uint32_t dc_state::soundram32_r(offs_t offset)
+{
+	return dc_sound_ram[offset * 2] | (uint32_t(dc_sound_ram[offset * 2 + 1]) << 16);
+}
+
+void dc_state::soundram32_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	const uint16_t lo_mask = mem_mask;
+	const uint16_t hi_mask = mem_mask >> 16;
+	dc_sound_ram[offset * 2] = (dc_sound_ram[offset * 2] & ~lo_mask) | (data & lo_mask);
+	dc_sound_ram[offset * 2 + 1] = (dc_sound_ram[offset * 2 + 1] & ~hi_mask) | ((data >> 16) & hi_mask);
+}
+
 void dc_state::aica_irq(int state)
 {
 	m_soundcpu->set_input_line(arm7_cpu_device::ARM7_FIRQ_LINE, state ? ASSERT_LINE : CLEAR_LINE);
