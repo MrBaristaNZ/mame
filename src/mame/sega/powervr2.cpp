@@ -748,7 +748,8 @@ void powervr2_device::tex_get_info(texinfo *t)
 	t->cd = dilatechose[t->sizes];
 	t->palbase = 0;
 	t->vqbase = t->address;
-	t->blend = ignoretexalpha ? bl10 : blend_functions[t->blend_mode];
+	t->blend = blend_functions[t->blend_mode];
+	t->texalpha_set = ignoretexalpha ? 0xff000000 : 0; // the texel's alpha reads as 1.0, the blend mode still applies
 
 	t->coltype = coltype;
 	t->tsinstruction = tsinstruction;
@@ -2801,6 +2802,7 @@ inline uint32_t powervr2_device::sample_textured(texinfo *ti, float u, float v, 
 	{
 		c = (this->*(ti->r))(ti, u, v);
 	}
+	c |= ti->texalpha_set;
 
 	switch (tsinst) {
 		case 0:

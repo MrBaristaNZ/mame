@@ -102,6 +102,7 @@ public:
 
 		uint32_t tsinstruction = 0;
 		uint8_t cullmode = 0; // ISP culling mode: 0 none, 1 small, 2 negative or small, 3 positive or small
+		uint32_t texalpha_set = 0; // 0xff000000 if the polygon ignores texture alpha, else 0
 
 		int textured = 0, sizex = 0, sizey = 0, stride = 0, sizes = 0, pf = 0, palette = 0, mode = 0, mipmapped = 0, blend_mode = 0, filter_mode = 0;
 		int coltype = 0;
