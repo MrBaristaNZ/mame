@@ -268,6 +268,8 @@ public:
 	void fb_y_clip_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	uint32_t fpu_param_cfg_r();
 	void fpu_param_cfg_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+	uint32_t isp_feed_cfg_r();
+	void isp_feed_cfg_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	uint32_t isp_backgnd_t_r();
 	void isp_backgnd_t_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	uint32_t spg_hblank_int_r();
@@ -402,6 +404,7 @@ private:
 	uint32_t vo_border_col;
 	uint32_t fb_r_ctrl, fb_w_ctrl, fb_w_linestride, fb_r_sof1, fb_r_sof2, fb_r_size, fb_w_sof1, fb_w_sof2, fb_x_clip, fb_y_clip, fpu_shad_scale, fpu_cull_val;
 	uint32_t fpu_param_cfg;
+	uint32_t isp_feed_cfg;
 	uint32_t isp_backgnd_t;
 	uint32_t spg_hblank_int, spg_vblank_int, spg_control, spg_hblank, spg_load, spg_vblank, spg_width;
 	uint32_t vo_control, vo_startx, vo_starty;
@@ -447,6 +450,7 @@ private:
 		uint32_t fb_w_linestride = 0;
 		float fpu_cull_val = 0.0f;
 		uint32_t fpu_shad_scale = 0;
+		bool trans_autosort = false; // sort translucent polygons per pixel, without writing depth
 		uint32_t fb_start = 0; // span of the 32-bit area the tiles get written to, wrapping around like the writes
 		uint32_t fb_size = 0;
 		uint32_t background = 0;
@@ -473,6 +477,27 @@ private:
 		int32_t vert; // -1: only scale the strip's texture coordinates (single-threaded fallback)
 		uint8_t tx0, tx1, ty0, ty1;
 	};
+
+	// translucent fragments of auto-sort mode, one slice of the pool per band of rows
+	struct fragment
+	{
+		float depth;
+		uint32_t src;
+		uint32_t blend_mode;
+		uint32_t next; // index of the next fragment of the pixel, newest first
+	};
+	struct frag_band
+	{
+		uint32_t base, size, count, overflow;
+		uint32_t pad[8]; // keep bands off each other's cache lines
+	};
+	static constexpr uint32_t FRAGMENTS_PER_PIXEL = 8;
+	static constexpr uint32_t FRAGMENT_NONE = 0xffffffff;
+
+	std::unique_ptr<fragment []> m_frag_pool;
+	uint32_t m_frag_head[480][640]; // first fragment of each pixel, FRAGMENT_NONE if it has none
+	frag_band m_frag_bands[WORK_MAX_THREADS];
+	uint8_t m_frag_row_band[480];
 
 	osd_work_queue *m_render_queue;
 	osd_work_queue *m_band_queue;
@@ -654,6 +679,10 @@ private:
 		void render_tri(bitmap_rgb32 &bitmap, const rectangle &cliprect, const uint64_t *rowmask, texinfo *ti, const vert *v);
 
 	inline void scale_texture_coordinates(int rs, const strip &ts);
+	void setup_fragment_bands(int bands);
+	inline void add_fragment(int y, int x, float depth, uint32_t src, uint32_t blend_mode, uint32_t *dst);
+	void resolve_fragments(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+	void log_fragment_overflow(int bands);
 	bool scale_all_texture_coordinates();
 
 	void sort_vertices(const vert *v, int *i0, int *i1, int *i2);
