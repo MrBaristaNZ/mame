@@ -72,7 +72,7 @@ void powervr2_device::ta_map(address_map &map)
 	map(0x0068, 0x006b).rw(FUNC(powervr2_device::fb_x_clip_r), FUNC(powervr2_device::fb_x_clip_w));
 	map(0x006c, 0x006f).rw(FUNC(powervr2_device::fb_y_clip_r), FUNC(powervr2_device::fb_y_clip_w));
 // 74 = fpu_shad_scale
-// 78 = fpu_cull_val
+	map(0x0078, 0x007b).rw(FUNC(powervr2_device::fpu_cull_val_r), FUNC(powervr2_device::fpu_cull_val_w));
 	map(0x007c, 0x007f).rw(FUNC(powervr2_device::fpu_param_cfg_r), FUNC(powervr2_device::fpu_param_cfg_w));
 // 80 = half_offset
 // 84 = fpu_perp_val
@@ -701,6 +701,7 @@ void powervr2_device::tex_get_info(texinfo *t)
 	int miptype = 0;
 
 	t->textured    = texture;
+	t->cullmode    = cullingmode;
 	t->address     = textureaddress;
 	t->pf          = pixelformat;
 	t->palette     = 0;
@@ -1029,6 +1030,7 @@ void powervr2_device::startrender_w(address_space &space, uint32_t data)
 			m_render.fb_r_ctrl = fb_r_ctrl;
 			m_render.fb_w_sof1 = fb_w_sof1;
 			m_render.fb_w_linestride = fb_w_linestride;
+			m_render.fpu_cull_val = u2f(fpu_cull_val);
 			// TODO: can go out of bounds reading the framebuffer space
 			// Old note (outdated?): read ISP/TSP command from isp_backgnd_t instead of always
 			// assuming Gouraud shaded full-screen polygon.
@@ -1220,6 +1222,15 @@ void powervr2_device::bin_triangles(int bands, bool scale_uv)
 			for (int i = sv; i <= ev - 2; i++)
 			{
 				const vert *v = grab[rs].verts + i;
+				if (ts.ti.cullmode != 0)
+				{
+					// area of the triangle in screen coordinates (y down), negated on every other triangle of a strip as the winding alternates
+					float area = (v[1].x - v[0].x) * (v[2].y - v[0].y) - (v[2].x - v[0].x) * (v[1].y - v[0].y);
+					if ((i - sv) & 1)
+						area = -area;
+					if ((fabsf(area) < fabsf(m_render.fpu_cull_val)) || ((ts.ti.cullmode == 2) && (area < 0)) || ((ts.ti.cullmode == 3) && (area > 0)))
+						continue;
+				}
 				int tx0 = 0, tx1 = 19, ty0 = 0, ty1 = TILE_ROWS - 1; // 640 x 480 pixels are drawn
 				const float xs[3] = { v[0].x, v[1].x, v[2].x };
 				const float ys[3] = { v[0].y, v[1].y, v[2].y };
@@ -1541,6 +1552,17 @@ uint32_t powervr2_device::fb_x_clip_r()
 void powervr2_device::fb_x_clip_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 {
 	COMBINE_DATA(&fb_x_clip);
+}
+
+uint32_t powervr2_device::fpu_cull_val_r()
+{
+	return fpu_cull_val;
+}
+
+void powervr2_device::fpu_cull_val_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	// float: triangles whose area is smaller than this are culled in culling modes 1 to 3
+	COMBINE_DATA(&fpu_cull_val);
 }
 
 uint32_t powervr2_device::fb_y_clip_r()
@@ -2451,6 +2473,7 @@ void powervr2_device::process_ta_fifo()
 					tex_get_info(&ts->ti);
 					ts->clip_mode = (user_tile_mode >= 2) ? user_tile_mode : 0;
 					set_strip_tile_clip(*ts);
+					ts->ti.cullmode = 0; // sprites are not culled
 					ts->svert = rd->verts_size;
 					ts->evert = rd->verts_size + 3;
 
@@ -4435,6 +4458,7 @@ void powervr2_device::device_start()
 	fb_w_sof2 = 0;
 	fb_x_clip = 0;
 	fb_y_clip = 0;
+	fpu_cull_val = 0;
 	fpu_param_cfg = 0;
 	isp_backgnd_t = 0;
 	spg_hblank_int = 0;
@@ -4492,6 +4516,7 @@ void powervr2_device::device_start()
 	save_item(NAME(fb_w_sof2));
 	save_item(NAME(fb_x_clip));
 	save_item(NAME(fb_y_clip));
+	save_item(NAME(fpu_cull_val));
 	save_item(NAME(fpu_param_cfg));
 	save_item(NAME(isp_backgnd_t));
 	save_item(NAME(spg_hblank_int));
