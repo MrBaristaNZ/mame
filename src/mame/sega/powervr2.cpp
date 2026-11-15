@@ -76,7 +76,7 @@ void powervr2_device::ta_map(address_map &map)
 // 84 = fpu_perp_val
 // 88 = isp_backgnd_d
 	map(0x008c, 0x008f).rw(FUNC(powervr2_device::isp_backgnd_t_r), FUNC(powervr2_device::isp_backgnd_t_w));
-// 98 = isp_feed_cfg
+	map(0x0098, 0x009b).rw(FUNC(powervr2_device::isp_feed_cfg_r), FUNC(powervr2_device::isp_feed_cfg_w));
 // a0 = sdram_refresh
 // a4 = sdram_arb_cfg
 // a8 = sdram_cfg
@@ -1037,6 +1037,7 @@ void powervr2_device::startrender_w(address_space &space, uint32_t data)
 
 			/* collect the tiles to copy to the framebuffer once the render is done (really the rendering should be per tile too) */
 			int sizera = fpu_param_cfg & 0x200000 ? 6 : 5;
+			int presort_tiles = 0;
 			int offsetra = region_base;
 
 			//printf("base is %08x\n", offsetra);
@@ -1073,6 +1074,10 @@ void powervr2_device::startrender_w(address_space &space, uint32_t data)
 					// the framebuffer
 
 					m_render.tiles.push_back((y << 16) | x);
+
+					// type 2 region arrays choose pre-sort per tile, type 1 use ISP_FEED_CFG for all
+					if ((sizera == 6) ? BIT(st[0], 29) : BIT(isp_feed_cfg, 0))
+						presort_tiles++;
 				}
 
 				if (st[0] & 0x80000000)
@@ -1083,6 +1088,10 @@ void powervr2_device::startrender_w(address_space &space, uint32_t data)
 				//if(sanitycount>2000)
 				//  break;
 			}
+
+			// the frame is drawn at once rather than per tile, so translucent polygons are auto-sorted
+			// unless every tile asks for them to be drawn in list order
+			m_render.trans_autosort = presort_tiles != int(m_render.tiles.size());
 
 			int miny = 0x10000, maxy = -1, maxx = 0;
 			std::fill(std::begin(m_rendered_tiles), std::end(m_rendered_tiles), 0);
@@ -1131,9 +1140,13 @@ void *powervr2_device::render_thread_callback(void *param, int threadid)
 	const int bands = osd_work_queue_thread_count(pvr->m_band_queue) + 1;
 	if ((bands == 1) || (pvr->renderselect < 0) || !pvr->scale_all_texture_coordinates())
 	{
+		pvr->setup_fragment_bands(1);
 		pvr->render_to_accumulation_buffer(*pvr->fake_accumulationbuffer_bitmap, clip, true);
+		pvr->log_fragment_overflow(1);
 		return nullptr;
 	}
+
+	pvr->setup_fragment_bands(bands);
 
 	for (int band = 0; band < bands; band++)
 	{
@@ -1145,7 +1158,17 @@ void *powervr2_device::render_thread_callback(void *param, int threadid)
 	while (!osd_work_queue_wait(pvr->m_band_queue, osd_ticks_per_second()))
 	{
 	}
+	pvr->log_fragment_overflow(bands);
 	return nullptr;
+}
+
+void powervr2_device::log_fragment_overflow(int bands)
+{
+	uint32_t overflow = 0;
+	for (int band = 0; band < bands; band++)
+		overflow += m_frag_bands[band].overflow;
+	if (overflow)
+		LOGWARN("Translucent fragment pool full, %u fragments blended in list order\n", overflow);
 }
 
 void *powervr2_device::render_band_callback(void *param, int threadid)
@@ -1392,6 +1415,17 @@ uint32_t powervr2_device::fpu_param_cfg_r()
 void powervr2_device::fpu_param_cfg_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 {
 	COMBINE_DATA(&fpu_param_cfg);
+}
+
+uint32_t powervr2_device::isp_feed_cfg_r()
+{
+	return isp_feed_cfg;
+}
+
+void powervr2_device::isp_feed_cfg_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	// ---- ---- ---- ---- ---- ---- ---- ---x translucent pre-sort (type 1 region arrays), 0 = auto-sort
+	COMBINE_DATA(&isp_feed_cfg);
 }
 
 uint32_t powervr2_device::isp_backgnd_t_r()
@@ -2692,8 +2726,16 @@ inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, int
 				*wbufline = wl;
 			} else {
 				if(c & 0xff000000) {
-					*wbufline = wl;
-					*tdata = ti->blend(c, *tdata);
+					if (m_render.trans_autosort && (group_no == DISPLAY_LIST_TRANS))
+					{
+						// no depth write: translucent surfaces don't hide each other, they are sorted and blended in resolve_fragments
+						add_fragment(y, xxl, wl, c, ti->blend_mode, tdata);
+					}
+					else
+					{
+						*wbufline = wl;
+						*tdata = ti->blend(c, *tdata);
+					}
 				}
 			}
 		}
@@ -3160,6 +3202,85 @@ void powervr2_device::render_group_to_accumulation_buffer(bitmap_rgb32 &bitmap, 
 	}
 }
 
+// Auto-sort mode of the hardware: translucent polygons are ordered per pixel, far to near.
+// Drawing the translucent list collects a fragment for every pixel that passes the depth test;
+// resolve_fragments then blends each pixel's fragments in depth order.  Fragments of equal depth
+// stay in list order (earlier ones underneath).
+// Every band of rows has its own slice of the pool, so threads share nothing.
+
+void powervr2_device::setup_fragment_bands(int bands)
+{
+	for (int band = 0; band < bands; band++)
+	{
+		const int y0 = RENDER_HEIGHT * band / bands;
+		const int y1 = RENDER_HEIGHT * (band + 1) / bands;
+		frag_band &fb = m_frag_bands[band];
+		fb.base = y0 * 640 * FRAGMENTS_PER_PIXEL;
+		fb.size = (y1 - y0) * 640 * FRAGMENTS_PER_PIXEL;
+		fb.count = 0;
+		fb.overflow = 0;
+		std::fill(m_frag_row_band + y0, m_frag_row_band + y1, uint8_t(band));
+	}
+}
+
+inline void powervr2_device::add_fragment(int y, int x, float depth, uint32_t src, uint32_t blend_mode, uint32_t *dst)
+{
+	frag_band &fb = m_frag_bands[m_frag_row_band[y]];
+	if (fb.count < fb.size)
+	{
+		uint32_t &head = m_frag_head[y][x];
+		fragment &f = m_frag_pool[fb.base + fb.count];
+		f.depth = depth;
+		f.src = src;
+		f.blend_mode = blend_mode;
+		f.next = head;
+		head = fb.base + fb.count;
+		fb.count++;
+	}
+	else
+	{
+		// pool full: blend straight away in list order
+		fb.overflow++;
+		*dst = blend_functions[blend_mode](src, *dst);
+	}
+}
+
+void powervr2_device::resolve_fragments(bitmap_rgb32 &bitmap, const rectangle &cliprect)
+{
+	const int maxy = std::min(cliprect.bottom(), RENDER_HEIGHT - 1);
+	for (int y = cliprect.top(); y <= maxy; y++)
+	{
+		uint32_t *const line = &bitmap.pix(y, 0);
+		for (int x = 0; x < 640; x++)
+		{
+			uint32_t &head = m_frag_head[y][x];
+			if (head == FRAGMENT_NONE)
+				continue;
+
+			// the list runs newest first; insert each fragment before the first one that is no farther, so
+			// the sorted list is far to near and equal depths keep list order
+			uint32_t sorted = FRAGMENT_NONE;
+			for (uint32_t i = head; i != FRAGMENT_NONE; )
+			{
+				fragment &f = m_frag_pool[i];
+				const uint32_t next = f.next;
+				uint32_t *link = &sorted;
+				while ((*link != FRAGMENT_NONE) && (m_frag_pool[*link].depth < f.depth))
+					link = &m_frag_pool[*link].next;
+				f.next = *link;
+				*link = i;
+				i = next;
+			}
+			head = FRAGMENT_NONE;
+
+			uint32_t c = line[x];
+			for (uint32_t i = sorted; i != FRAGMENT_NONE; i = m_frag_pool[i].next)
+				c = blend_functions[m_frag_pool[i].blend_mode](m_frag_pool[i].src, c);
+			line[x] = c;
+		}
+	}
+}
+
 // draws the rows inside cliprect; every pixel gets the same operations in the same order however the rows are split up
 void powervr2_device::render_to_accumulation_buffer(bitmap_rgb32 &bitmap, const rectangle &cliprect, bool scale_uv) {
 	if (renderselect < 0)
@@ -3172,8 +3293,11 @@ void powervr2_device::render_to_accumulation_buffer(bitmap_rgb32 &bitmap, const 
 
 	// TODO: modifier volumes
 	render_group_to_accumulation_buffer<DISPLAY_LIST_OPAQUE>(bitmap, cliprect, scale_uv);
-	render_group_to_accumulation_buffer<DISPLAY_LIST_TRANS>(bitmap, cliprect, scale_uv);
+	// punch-through is drawn before translucent, as on the hardware; translucent surfaces write no depth when sorted
 	render_group_to_accumulation_buffer<DISPLAY_LIST_PUNCH_THROUGH>(bitmap, cliprect, scale_uv);
+	render_group_to_accumulation_buffer<DISPLAY_LIST_TRANS>(bitmap, cliprect, scale_uv);
+	if (m_render.trans_autosort)
+		resolve_fragments(bitmap, cliprect);
 }
 
 // copies the accumulation buffer into the framebuffer, converting to the specified format
@@ -4244,6 +4368,8 @@ void powervr2_device::device_start()
 	dma_irq_timer = timer_alloc(FUNC(powervr2_device::pvr_dma_irq), this);
 
 	fake_accumulationbuffer_bitmap = std::make_unique<bitmap_rgb32>(2048,2048);
+	m_frag_pool = std::make_unique_for_overwrite<fragment []>(RENDER_HEIGHT * 640 * FRAGMENTS_PER_PIXEL);
+	std::fill(&m_frag_head[0][0], &m_frag_head[0][0] + RENDER_HEIGHT * 640, FRAGMENT_NONE);
 
 	m_render_queue = osd_work_queue_alloc(WORK_QUEUE_FLAG_HIGH_FREQ);
 	m_band_queue = osd_work_queue_alloc(WORK_QUEUE_FLAG_MULTI | WORK_QUEUE_FLAG_HIGH_FREQ);
@@ -4296,6 +4422,7 @@ void powervr2_device::device_start()
 	fb_x_clip = 0;
 	fb_y_clip = 0;
 	fpu_param_cfg = 0;
+	isp_feed_cfg = 0;
 	isp_backgnd_t = 0;
 	spg_hblank_int = 0;
 	spg_vblank_int = 0;
@@ -4348,6 +4475,7 @@ void powervr2_device::device_start()
 	save_item(NAME(fb_x_clip));
 	save_item(NAME(fb_y_clip));
 	save_item(NAME(fpu_param_cfg));
+	save_item(NAME(isp_feed_cfg));
 	save_item(NAME(isp_backgnd_t));
 	save_item(NAME(spg_hblank_int));
 	save_item(NAME(spg_vblank_int));
