@@ -415,8 +415,8 @@ private:
 	emu_timer *punch_through_irq_timer = nullptr;
 	emu_timer *dma_irq_timer = nullptr;
 
-	// texture RAM is tracked in 16K pages so uploads only wait for a render that samples from them
-	static constexpr unsigned TEXTURE_PAGE_SHIFT = 14;
+	// texture RAM is tracked in 1K pages so uploads only wait for a render that samples from them
+	static constexpr unsigned TEXTURE_PAGE_SHIFT = 10;
 	static constexpr unsigned TEXTURE_PAGES = 0x1000000 >> TEXTURE_PAGE_SHIFT;
 
 	// state latched at STARTRENDER for the render thread, so it never sees later register writes

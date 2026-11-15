@@ -1383,8 +1383,10 @@ void powervr2_device::collect_texture_pages(int buffer)
 			}
 
 			// generous enough for every format: 16bpp is the largest texel, VQ codebooks sit below the indices
+			// (twiddled 16bpp, 4bpp and 8bpp palette, VQ and YUV are all covered; the last texel read ends
+			// exactly at address + size, YUV included, so there is no pad)
 			const uint32_t start = std::min(ti.address, ti.vqbase);
-			const uint32_t end = ti.address + std::max(ti.stride, ti.sizex) * ti.sizey * 2 + 8;
+			const uint32_t end = ti.address + std::max(ti.stride, ti.sizex) * ti.sizey * 2;
 			if ((start == last_start) && (end == last_end))
 			{
 				continue;
