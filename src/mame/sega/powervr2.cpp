@@ -69,7 +69,7 @@ void powervr2_device::ta_map(address_map &map)
 	map(0x0064, 0x0067).rw(FUNC(powervr2_device::fb_w_sof2_r), FUNC(powervr2_device::fb_w_sof2_w));
 	map(0x0068, 0x006b).rw(FUNC(powervr2_device::fb_x_clip_r), FUNC(powervr2_device::fb_x_clip_w));
 	map(0x006c, 0x006f).rw(FUNC(powervr2_device::fb_y_clip_r), FUNC(powervr2_device::fb_y_clip_w));
-// 74 = fpu_shad_scale
+	map(0x0074, 0x0077).rw(FUNC(powervr2_device::fpu_shad_scale_r), FUNC(powervr2_device::fpu_shad_scale_w));
 // 78 = fpu_cull_val
 	map(0x007c, 0x007f).rw(FUNC(powervr2_device::fpu_param_cfg_r), FUNC(powervr2_device::fpu_param_cfg_w));
 // 80 = half_offset
@@ -699,6 +699,8 @@ void powervr2_device::tex_get_info(texinfo *t)
 	int miptype = 0;
 
 	t->textured    = texture;
+	// shadow bit set and volume bit clear selects the intensity ("cheap shadow") mode
+	t->shadow      = (shadow && !volume) ? SHADOW_ENABLE : 0;
 	t->address     = textureaddress;
 	t->pf          = pixelformat;
 	t->palette     = 0;
@@ -1027,6 +1029,7 @@ void powervr2_device::startrender_w(address_space &space, uint32_t data)
 			m_render.fb_r_ctrl = fb_r_ctrl;
 			m_render.fb_w_sof1 = fb_w_sof1;
 			m_render.fb_w_linestride = fb_w_linestride;
+			m_render.fpu_shad_scale = fpu_shad_scale;
 			// TODO: can go out of bounds reading the framebuffer space
 			// Old note (outdated?): read ISP/TSP command from isp_backgnd_t instead of always
 			// assuming Gouraud shaded full-screen polygon.
@@ -1374,6 +1377,19 @@ void powervr2_device::fb_x_clip_w(offs_t offset, uint32_t data, uint32_t mem_mas
 	COMBINE_DATA(&fb_x_clip);
 }
 
+uint32_t powervr2_device::fpu_shad_scale_r()
+{
+	return fpu_shad_scale;
+}
+
+void powervr2_device::fpu_shad_scale_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	// ---- ---x ---- ---- intensity shadow enable (0 = two volume mode)
+	// ---- ---- xxxx xxxx scale factor for pixels inside a modifier volume, n/256
+	COMBINE_DATA(&fpu_shad_scale);
+	fpu_shad_scale &= 0x1ff;
+}
+
 uint32_t powervr2_device::fb_y_clip_r()
 {
 	return fb_y_clip;
@@ -1716,6 +1732,7 @@ void powervr2_device::ta_list_init_w(uint32_t data)
 		grab[grabsel].busy       = 0;
 		grab[grabsel].valid      = 1;
 		grab[grabsel].verts_size = 0;
+		grab[grabsel].modvol_tris_size = 0;
 		for (int group = 0; group < DISPLAY_LIST_COUNT; group++) {
 			grab[grabsel].groups[group].strips_size = 0;
 		}
@@ -2227,6 +2244,21 @@ void powervr2_device::process_ta_fifo()
 			if ((tafifo_listtype == DISPLAY_LIST_OPAQUE_MOD) ||
 				(tafifo_listtype == DISPLAY_LIST_TRANS_MOD))
 			{
+				// TODO: translucent modifier volumes
+				if ((tafifo_listtype == DISPLAY_LIST_OPAQUE_MOD) && (rd->modvol_tris_size < MAX_MODVOL_TRIS))
+				{
+					modvol_tri &mt = rd->modvol_tris[rd->modvol_tris_size++];
+					for (int i = 0; i < 3; i++)
+					{
+						mt.x[i] = u2f(tafifo_buff[1 + i * 3]);
+						mt.y[i] = u2f(tafifo_buff[2 + i * 3]);
+						mt.w[i] = u2f(tafifo_buff[3 + i * 3]);
+					}
+					// the instruction of the last modifier volume header applies to every triangle after it:
+					// 0 normal polygon, 1 inside last polygon (ends an inclusion volume), 2 outside last polygon
+					// (ends an exclusion volume); the reserved value 3 is treated like 0
+					mt.instruction = volumeinstruction & 3;
+				}
 				LOGTATILE(" Vertex modifier volume");
 				LOGTATILE(" A(%f,%f,%f) B(%f,%f,%f) C(%f,%f,%f)\n",
 					u2f(tafifo_buff[1]), u2f(tafifo_buff[2]), u2f(tafifo_buff[3]),
@@ -2678,6 +2710,7 @@ inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, int
 
 	tdata = &bitmap.pix(y, xxl);
 	wbufline = &wbuffer[y][xxl];
+	uint8_t *shadowline = &shadowbuffer[y][xxl];
 
 	while(xxl < xxr) {
 		if((wl >= *wbufline)) {
@@ -2690,6 +2723,7 @@ inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, int
 			if (group_no == DISPLAY_LIST_OPAQUE) {
 				*tdata = c;
 				*wbufline = wl;
+				*shadowline = ti->shadow;
 			} else {
 				if(c & 0xff000000) {
 					*wbufline = wl;
@@ -2698,6 +2732,7 @@ inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, int
 			}
 		}
 		wbufline++;
+		shadowline++;
 		tdata++;
 
 		ul += dudx;
@@ -3160,18 +3195,184 @@ void powervr2_device::render_group_to_accumulation_buffer(bitmap_rgb32 &bitmap, 
 	}
 }
 
+/*
+ * Opaque modifier volumes, intensity mode only (FPU_SHAD_SCALE bit 8).
+ *
+ * A pixel is inside a closed volume when an odd number of the volume's faces lie between
+ * it and the viewer.  Each triangle flips a parity bit on the pixels where it is in front
+ * of the opaque surface, and the triangle that ends the volume ("inside last polygon")
+ * turns the parity into the inside flag.  Pixels that end up inside and belong to a
+ * polygon with the shadow bit get their colour scaled.
+ *
+ * Counting only works if the faces of a volume cover every pixel exactly once where they
+ * meet, so a triangle covers the pixel centres that are on or below its top edge and on or
+ * right of its left edge, and the x where an edge crosses a row is worked out from the
+ * edge's two end points in a fixed order.  Two triangles sharing an edge then agree on it
+ * exactly.  Every row is computed on its own, so the bands can each do their own rows.
+ *
+ * TODO: two volume mode, translucent modifier volumes, punch-through polygons
+ */
+
+namespace {
+
+// x where the edge between a and b crosses the horizontal line at y, the same whichever way round the end points are given
+inline double modvol_edge_x(float ax, float ay, float bx, float by, double y)
+{
+	if ((by < ay) || ((by == ay) && (bx < ax)))
+	{
+		std::swap(ax, bx);
+		std::swap(ay, by);
+	}
+	return ax + (y - ay) * (double(bx) - ax) / (double(by) - ay);
+}
+
+} // anonymous namespace
+
+void powervr2_device::render_modvol_tri(const rectangle &cliprect, const modvol_tri &mt)
+{
+	// sort the corners from top to bottom
+	int i0 = 0, i1 = 1, i2 = 2;
+	if (mt.y[i1] < mt.y[i0])
+		std::swap(i0, i1);
+	if (mt.y[i2] < mt.y[i1])
+		std::swap(i1, i2);
+	if (mt.y[i1] < mt.y[i0])
+		std::swap(i0, i1);
+	const float x0 = mt.x[i0], y0 = mt.y[i0];
+	const float x1 = mt.x[i1], y1 = mt.y[i1];
+	const float x2 = mt.x[i2], y2 = mt.y[i2];
+
+	const double area = (double(x1) - x0) * (double(y2) - y0) - (double(x2) - x0) * (double(y1) - y0);
+	if (area == 0)
+		return;
+
+	// depth is a plane across the triangle
+	const double dwdx = ((double(mt.w[i1]) - mt.w[i0]) * (double(y2) - y0) - (double(mt.w[i2]) - mt.w[i0]) * (double(y1) - y0)) / area;
+	const double dwdy = ((double(mt.w[i2]) - mt.w[i0]) * (double(x1) - x0) - (double(mt.w[i1]) - mt.w[i0]) * (double(x2) - x0)) / area;
+
+	// rows whose centre is in [y0, y2), clamped before converting so huge coordinates stay defined
+	const double miny = std::max(cliprect.top(), 0), maxy = std::min(cliprect.bottom(), RENDER_HEIGHT - 1);
+	const double firstrow = std::ceil(double(y0) - 0.5), lastrow = std::ceil(double(y2) - 0.5) - 1;
+	if ((firstrow > maxy) || (lastrow < miny))
+		return;
+	const int first = int(std::max(firstrow, miny));
+	const int last = int(std::min(lastrow, maxy));
+
+	for (int py = first; py <= last; py++)
+	{
+		const double cy = py + 0.5;
+		const double xa = modvol_edge_x(x0, y0, x2, y2, cy);
+		const double xb = (cy < y1) ? modvol_edge_x(x0, y0, x1, y1, cy) : modvol_edge_x(x1, y1, x2, y2, cy);
+
+		// pixel centres in [left, right)
+		const int pxl = int(std::clamp(std::ceil(std::min(xa, xb) - 0.5), 0.0, 640.0));
+		const int pxr = int(std::clamp(std::ceil(std::max(xa, xb) - 0.5), 0.0, 640.0));
+
+		const float *const wline = wbuffer[py];
+		uint8_t *const sline = shadowbuffer[py];
+		double wi = mt.w[i0] + dwdy * (cy - y0) + dwdx * ((pxl + 0.5) - x0);
+		for (int px = pxl; px < pxr; px++, wi += dwdx)
+		{
+			if (wi > wline[px])
+				sline[px] ^= SHADOW_PARITY;
+		}
+	}
+}
+
+void powervr2_device::render_modifier_volumes(bitmap_rgb32 &bitmap, const rectangle &cliprect)
+{
+	const receiveddata &rd = grab[renderselect];
+	if (!rd.modvol_tris_size || !BIT(m_render.fpu_shad_scale, 8))
+		return;
+
+	const int miny = std::max(cliprect.top(), 0), maxy = std::min(cliprect.bottom(), RENDER_HEIGHT - 1);
+	if (miny > maxy)
+		return;
+
+	// bounds of the current volume and of everything flagged as inside, within this band
+	int vx0 = 640, vx1 = -1, vy0 = RENDER_HEIGHT, vy1 = -1;
+	int sx0 = 640, sx1 = -1, sy0 = RENDER_HEIGHT, sy1 = -1;
+
+	for (int n = 0; n < rd.modvol_tris_size; n++)
+	{
+		const modvol_tri &mt = rd.modvol_tris[n];
+
+		// a triangle with an infinite or NaN corner can't be drawn; leave it out
+		bool finite = true;
+		for (int i = 0; i < 3; i++)
+			finite = finite && std::isfinite(mt.x[i]) && std::isfinite(mt.y[i]) && std::isfinite(mt.w[i]);
+
+		if (finite)
+		{
+			render_modvol_tri(cliprect, mt);
+
+			// the pixels a triangle covers lie inside its corners' bounding box (clamped before converting to int)
+			const float fx0 = std::min({ mt.x[0], mt.x[1], mt.x[2] }), fx1 = std::max({ mt.x[0], mt.x[1], mt.x[2] });
+			const float fy0 = std::min({ mt.y[0], mt.y[1], mt.y[2] }), fy1 = std::max({ mt.y[0], mt.y[1], mt.y[2] });
+			if ((fx1 >= 0) && (fx0 < 640) && (fy1 >= miny) && (fy0 < maxy + 1))
+			{
+				vx0 = std::min(vx0, int(std::max(std::floor(fx0), 0.0f)));
+				vx1 = std::max(vx1, int(std::min(std::ceil(fx1), 639.0f)));
+				vy0 = std::min(vy0, int(std::max(std::floor(fy0), float(miny))));
+				vy1 = std::max(vy1, int(std::min(std::ceil(fy1), float(maxy))));
+			}
+		}
+
+		if ((mt.instruction == 1) || (mt.instruction == 2))
+		{
+			// an exclusion volume affects everything it doesn't contain
+			if (mt.instruction == 2)
+			{
+				vx0 = 0; vx1 = 639;
+				vy0 = miny; vy1 = maxy;
+			}
+			// inside is odd parity for an inclusion volume, even parity for an exclusion volume
+			static_assert(SHADOW_INSIDE == (SHADOW_PARITY << 1));
+			const uint8_t flip = (mt.instruction == 1) ? 0 : SHADOW_PARITY;
+			for (int py = vy0; py <= vy1; py++)
+			{
+				uint8_t *const sline = shadowbuffer[py];
+				for (int px = vx0; px <= vx1; px++)
+					sline[px] = (sline[px] & ~SHADOW_PARITY) | (((sline[px] ^ flip) & SHADOW_PARITY) << 1);
+			}
+			sx0 = std::min(sx0, vx0); sx1 = std::max(sx1, vx1);
+			sy0 = std::min(sy0, vy0); sy1 = std::max(sy1, vy1);
+			vx0 = 640; vx1 = -1;
+			vy0 = RENDER_HEIGHT; vy1 = -1;
+		}
+	}
+
+	const uint32_t scale = m_render.fpu_shad_scale & 0xff;
+	for (int py = sy0; py <= sy1; py++)
+	{
+		const uint8_t *const sline = shadowbuffer[py];
+		uint32_t *const pix = &bitmap.pix(py);
+		for (int px = sx0; px <= sx1; px++)
+		{
+			if ((sline[px] & (SHADOW_ENABLE | SHADOW_INSIDE)) == (SHADOW_ENABLE | SHADOW_INSIDE))
+			{
+				const uint32_t c = pix[px];
+				pix[px] = (c & 0xff000000) | ((((c & 0x00ff00ff) * scale) >> 8) & 0x00ff00ff) | ((((c & 0x0000ff00) * scale) >> 8) & 0x0000ff00);
+			}
+		}
+	}
+}
+
 // draws the rows inside cliprect; every pixel gets the same operations in the same order however the rows are split up
 void powervr2_device::render_to_accumulation_buffer(bitmap_rgb32 &bitmap, const rectangle &cliprect, bool scale_uv) {
 	if (renderselect < 0)
 		return;
 
 	if (cliprect.top() < RENDER_HEIGHT)
+	{
 		memset(wbuffer[cliprect.top()], 0x00, (std::min(cliprect.bottom(), RENDER_HEIGHT - 1) - cliprect.top() + 1) * sizeof(wbuffer[0]));
+		memset(shadowbuffer[cliprect.top()], 0x00, (std::min(cliprect.bottom(), RENDER_HEIGHT - 1) - cliprect.top() + 1) * sizeof(shadowbuffer[0]));
+	}
 
 	bitmap.fill(m_render.background, cliprect);
 
-	// TODO: modifier volumes
 	render_group_to_accumulation_buffer<DISPLAY_LIST_OPAQUE>(bitmap, cliprect, scale_uv);
+	render_modifier_volumes(bitmap, cliprect);
 	render_group_to_accumulation_buffer<DISPLAY_LIST_TRANS>(bitmap, cliprect, scale_uv);
 	render_group_to_accumulation_buffer<DISPLAY_LIST_PUNCH_THROUGH>(bitmap, cliprect, scale_uv);
 }
@@ -4295,6 +4496,7 @@ void powervr2_device::device_start()
 	fb_w_sof2 = 0;
 	fb_x_clip = 0;
 	fb_y_clip = 0;
+	fpu_shad_scale = 0;
 	fpu_param_cfg = 0;
 	isp_backgnd_t = 0;
 	spg_hblank_int = 0;
@@ -4347,6 +4549,7 @@ void powervr2_device::device_start()
 	save_item(NAME(fb_w_sof2));
 	save_item(NAME(fb_x_clip));
 	save_item(NAME(fb_y_clip));
+	save_item(NAME(fpu_shad_scale));
 	save_item(NAME(fpu_param_cfg));
 	save_item(NAME(isp_backgnd_t));
 	save_item(NAME(spg_hblank_int));

@@ -65,6 +65,7 @@ public:
 	int dilatechose[64];
 	static constexpr int RENDER_HEIGHT = 480; // rows of the accumulation buffer, split between the bands
 	float wbuffer[RENDER_HEIGHT][640];
+	uint8_t shadowbuffer[RENDER_HEIGHT][640]; // per-pixel modifier volume state, see SHADOW_xxx
 
 
 	// the real accumulation buffer is a 32x32x8bpp buffer into which tiles get rendered before they get copied to the framebuffer
@@ -100,6 +101,7 @@ public:
 		uint32_t address = 0, vqbase = 0;
 
 		uint32_t tsinstruction = 0;
+		uint8_t shadow = 0; // SHADOW_ENABLE if an intensity mode modifier volume darkens this polygon
 
 		int textured = 0, sizex = 0, sizey = 0, stride = 0, sizes = 0, pf = 0, palette = 0, mode = 0, mipmapped = 0, blend_mode = 0, filter_mode = 0;
 		int coltype = 0;
@@ -125,8 +127,21 @@ public:
 		texinfo ti;
 	};
 
+	struct modvol_tri
+	{
+		float x[3], y[3], w[3];
+		uint32_t instruction; // 0 = part of the volume, 1 = inside last polygon, 2 = outside last polygon
+	};
+
 	static const unsigned MAX_VERTS = 65536;
 	static const unsigned MAX_STRIPS = 65536;
+	static constexpr unsigned MAX_MODVOL_TRIS = 16384;
+
+	enum : uint8_t {
+		SHADOW_ENABLE = 0x01, // visible opaque pixel belongs to a polygon with the shadow bit
+		SHADOW_PARITY = 0x02, // odd number of faces of the current volume in front of the pixel
+		SHADOW_INSIDE = 0x04  // pixel is inside (or outside, for exclusion volumes) a finished volume
+	};
 
 	/*
 	 * There are five polygon lists:
@@ -167,6 +182,8 @@ public:
 		int busy = 0;
 		int valid = 0;
 		int verts_size = 0;
+		modvol_tri modvol_tris[MAX_MODVOL_TRIS];
+		int modvol_tris_size = 0;
 	};
 
 	enum {
@@ -236,6 +253,8 @@ public:
 	void fb_w_sof2_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	uint32_t fb_x_clip_r();
 	void fb_x_clip_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+	uint32_t fpu_shad_scale_r();
+	void fpu_shad_scale_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	uint32_t fb_y_clip_r();
 	void fb_y_clip_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	uint32_t fpu_param_cfg_r();
@@ -372,7 +391,7 @@ private:
 	uint32_t softreset;
 	uint32_t param_base, region_base;
 	uint32_t vo_border_col;
-	uint32_t fb_r_ctrl, fb_w_ctrl, fb_w_linestride, fb_r_sof1, fb_r_sof2, fb_r_size, fb_w_sof1, fb_w_sof2, fb_x_clip, fb_y_clip;
+	uint32_t fb_r_ctrl, fb_w_ctrl, fb_w_linestride, fb_r_sof1, fb_r_sof2, fb_r_size, fb_w_sof1, fb_w_sof2, fb_x_clip, fb_y_clip, fpu_shad_scale;
 	uint32_t fpu_param_cfg;
 	uint32_t isp_backgnd_t;
 	uint32_t spg_hblank_int, spg_vblank_int, spg_control, spg_hblank, spg_load, spg_vblank, spg_width;
@@ -417,6 +436,7 @@ private:
 		uint32_t fb_r_ctrl = 0;
 		uint32_t fb_w_sof1 = 0;
 		uint32_t fb_w_linestride = 0;
+		uint32_t fpu_shad_scale = 0;
 		uint32_t fb_start = 0; // span of the 32-bit area the tiles get written to, wrapping around like the writes
 		uint32_t fb_size = 0;
 		uint32_t background = 0;
@@ -612,6 +632,8 @@ private:
 	bool scale_all_texture_coordinates();
 
 	void sort_vertices(const vert *v, int *i0, int *i1, int *i2);
+	void render_modvol_tri(const rectangle &cliprect, const modvol_tri &mt);
+	void render_modifier_volumes(bitmap_rgb32 &bitmap, const rectangle &cliprect);
 	void render_to_accumulation_buffer(bitmap_rgb32 &bitmap, const rectangle &cliprect, bool scale_uv);
 	void pvr_accumulationbuffer_to_framebuffer(int x, int y);
 	void pvr_drawframebuffer(bitmap_rgb32 &bitmap,const rectangle &cliprect);
