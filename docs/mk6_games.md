@@ -2,7 +2,30 @@
 
 What has been tried on `mk6-play`, set by set. "Boots to the game" means it reached its game screen in a headless boot test with blank settings on an earlier build (Nov 2026), nothing more: those, and the "Not tried yet" sets, are the ones that most need testers. If you play one, please open an issue (see the README) and this list gets updated.
 
-Last updated 2026-11-13.
+Last updated 2026-11-20.
+
+## Where the MK6 work is in MAME
+
+The work goes into MAME in small pull requests. `mk6-play` has everything together for testing.
+Upstream MAME has no MK6 picture or sound until the open ones below merge, so test on `mk6-play`.
+
+Merged into MAME:
+- #16681, #16716 SH-4 timer fixes
+- #16724 PCI root without a host bridge
+- #16806 SH-4 clock mode 3 (correct CPU and bus clocks)
+- #16829 SH-4 DDT external DMA
+- #16834 FPGA interrupt state saved in save states
+- #16839 set comment fixes
+
+Waiting for review:
+- #16744 PLX PCI9054 bridge
+- #16745 DS1302 real-time clock
+- #16929 sound
+- #16939 PowerVR 250 video for MK6 (on Peter Wilhelmsen's powervr250)
+
+Known faults are tracked on the fork's Issues page, labelled `known fault`.
+
+## Game list
 
 | Status | Sets |
 |---|---|
