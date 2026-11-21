@@ -1,3 +1,59 @@
+# Sega Naomi in MAME: work in progress
+
+This fork is where I'm fixing Sega Naomi graphics (MAME's PowerVR2 renderer) and speed in MAME. The finished pieces go to MAME itself as small pull requests. This branch, `naomi-play`, has all of them together on current MAME master, for anyone who wants to try them. The fork's other Naomi branches are the separate PR branches; build this one.
+
+No ROMs are included or linked. You need your own dumps of the sets in MAME's `naomi.cpp`. Not affiliated with Sega.
+
+## What's fixed (tested by me, Nov 2026)
+
+- Cosmic Smash (`csmasho`): plays. The stage was a white wall after the start screen (back-face culling was missing).
+- Marvel vs Capcom 2 (`mvsc2`): the hyper gauges fill, hyper move effects show in full instead of inside a box, and fights run at about 100%.
+- Capcom vs SNK (`capsnk`): the timer digits are clean, the squares around super moves and the sun glare are gone, and it holds about 100%.
+- Crazy Taxi (`crzytaxi`): traffic cars are solid instead of see-through, and the money counter shows.
+- Slashout (`slasho`): the radar stays inside its window, and it runs at 80-95% (was 50-65%).
+- Alien Front (`alienfnta`): the map stays in its corner instead of covering the screen.
+- Asian Dynamite (`asndynmt`): the mission select previews show the right scenes.
+- Azumanga Daioh Puzzle Bobble (`azumanga`): runs well.
+- Street Fighter Zero 3 Upper (`sfz3ugd`): the title screen's white panel and the attract gallery portraits draw properly (reported in issue #1, thanks john-iv).
+- World Kicks (tested on `wldkicksu`; the other World Kicks sets run the same code): players have their kits, numbers and faces, and normal arms and legs instead of stretched spikes (16-bit texture coordinates, and the SH-4's cache-as-RAM layout).
+
+Speed comes from drawing each frame on several CPU cores and from removing waits where the CPU stopped for the renderer for no reason. Each fix is in the renderer, not in one game, so other games may look better too.
+
+## Known issues
+
+- Marvel vs Capcom 2: a little lag around the start menu.
+- Alien Front: controls don't respond yet.
+- Fog isn't emulated, and tiles that a game asks to draw in several passes are drawn once.
+- GD-ROM games are mostly untested so far (I'm still gathering the disc images).
+- Some games stop on a Naomi "Caution" or "Error" screen on first boot. So far these look like settings (for example a game region that doesn't match the BIOS, or the 31 kHz monitor setting), not graphics faults.
+
+## Download
+
+A Windows x64 build of this branch (Naomi driver only, `naomi.exe`) is on the [naomi-play-latest release](https://github.com/MrBaristaNZ/mame/releases/tag/naomi-play-latest). It's rebuilt automatically each time this branch changes. It contains MAME only, no ROMs.
+
+## Building
+
+Standard MAME build. For a quicker build with just Naomi:
+
+```
+make SUBTARGET=naomi SOURCES=src/mame/sega/naomi.cpp
+```
+
+## Testing and reports
+
+There are far more Naomi games than I can test alone, so reports are very welcome. Open an issue at https://github.com/MrBaristaNZ/mame/issues with the set name, what's wrong and when (attract, a menu, which stage), and a screenshot if you can. Please say which commit you built, and don't attach or link ROMs.
+
+## Status in MAME
+
+Merged: texture filtering around the texel centres (#16953), ROM board DMA at a bus rate instead of a disc drive's (#16958, ends mvsc2's 10 s white screen after VERSUS).
+Open: back-face culling (#16875), drawing by the hardware's 32x32 tiles on several threads with the user tile clip (#16876, also fixes #8997), alpha blending fixes (#16928), 16-bit texture coordinates (#16962), SH-4 operand cache RAM layout (#16963).
+Ready, not opened yet (fork branches): `powervr2-texture-pages`, `powervr2-span-colours`, `powervr2-modifier-volumes`, `powervr2-translucent-sort`, `naomi-arm7-sound-ram`.
+Each is its own commit here; a commit with an "Adapted for naomi-play" line was changed a little to fit with the others.
+
+This work is done with AI help (Claude, Anthropic), and every PR says so.
+
+---
+
 # MAME
 
 ## What is MAME?

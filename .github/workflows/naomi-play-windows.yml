@@ -1,0 +1,58 @@
+name: naomi-play Windows build
+
+# Builds a Windows x64 MAME with the Naomi driver only from the naomi-play test branch,
+# checks it with -validate and publishes it as the naomi-play-latest pre-release.
+
+on:
+  push:
+    branches:
+    - naomi-play
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: naomi-play-windows
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+    - uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
+      with:
+        msystem: UCRT64
+        install: git make zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-libc++ mingw-w64-ucrt-x86_64-sdl3
+    - uses: actions/checkout@main
+      with:
+        fetch-depth: 0
+    - name: Build
+      env:
+        OVERRIDE_AR: "llvm-ar"
+        OVERRIDE_CC: gcc
+        OVERRIDE_CXX: g++
+        ARCHOPTS: "-fuse-ld=lld"
+        SUBTARGET: naomi
+        SOURCES: src/mame/sega/naomi.cpp
+        USE_SDL3: 1
+      run: make -j4
+    - name: Validate
+      run: ./naomi.exe -validate
+    - name: Package
+      run: |
+        mkdir -p pkg
+        cp naomi.exe COPYING pkg/
+        git log -1 --format='naomi-play %H%n%cd%n%n%s' > pkg/BUILD.txt
+        cd pkg && zip -9 ../naomi-play-win64.zip naomi.exe COPYING BUILD.txt
+    - name: Publish
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release delete naomi-play-latest --yes --cleanup-tag 2>$null
+        $notes = "Windows x64 build of the naomi-play test branch (Naomi driver only, run as naomi.exe), commit $env:GITHUB_SHA. No ROMs included. See the branch README for what's fixed and how to report problems."
+        gh release create naomi-play-latest naomi-play-win64.zip --target $env:GITHUB_SHA --prerelease --title "naomi-play (latest Windows build)" --notes $notes
