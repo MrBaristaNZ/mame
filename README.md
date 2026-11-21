@@ -22,7 +22,9 @@ The status of every set, including the 178 that boot to their game screen but no
 
 ## Building
 
-Standard MAME build. For a quicker build with just this driver:
+A Windows x64 build of this branch (MK6 driver only, `mk6.exe`) is on the fork's Releases page as `mk6-play-latest`, rebuilt each time the branch changes.
+
+Otherwise, a standard MAME build. For a quicker build with just this driver:
 
 ```
 make SUBTARGET=mk6 SOURCES=src/mame/aristocrat/aristmk6.cpp
