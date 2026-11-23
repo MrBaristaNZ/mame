@@ -4588,6 +4588,28 @@ bool sh34_base_device::generate_group_0(drcuml_block &block, compiler_state &com
 	switch (opcode & 0xff)
 	{
 	default:
+		switch (opcode & 0x3f)
+		{
+		// codes left undefined by the cases above: the SH2 handlers would take the SH2 illegal instruction
+		// exception, but on SH-4 only H'FFFD is guaranteed to trap, and the interpreter runs these as
+		// ILLEGAL(), which is NOP on SH-4
+		case 0x00:
+		case 0x01:
+		case 0x10:
+		case 0x11:
+		case 0x13:
+		case 0x20:
+		case 0x21:
+		case 0x30:
+		case 0x31:
+		case 0x32:
+		case 0x33:
+		case 0x38:
+		case 0x39:
+		case 0x3a:
+		case 0x3b:
+			return true;
+		}
 		// fall through to SH2 handlers
 		return sh_common_execution::generate_group_0(block, compiler, desc, opcode, in_delay_slot, ovrpc);
 
