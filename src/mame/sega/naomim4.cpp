@@ -132,7 +132,8 @@ void naomi_m4_board::board_setup_address(uint32_t address, bool is_dma)
 
 void naomi_m4_board::board_get_buffer(uint8_t *&base, uint32_t &limit)
 {
-	static uint8_t retzero[2] = { 0, 0 };
+	// no flash ROM behind the address: the data bus floats high
+	static uint8_t retzero[2] = { 0xff, 0xff };
 
 	if (cfi_mode) {
 		int fpr_num = m4id & 0x7f;
