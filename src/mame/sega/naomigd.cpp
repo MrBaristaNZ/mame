@@ -913,48 +913,60 @@ void naomi_gdrom_board::device_start()
 
 		uint8_t buffer[2048];
 		cdrom_file *gdromfile = new cdrom_file(machine().rom_load().get_disk_handle(image_tag));
-		// primary volume descriptor
-		// read frame 0xb06e (frame=sector+150)
-		// dimm board firmware starts straight from this frame
-		gdromfile->read_data((netpic ? 0 : 45000) + 16, buffer, cdrom_file::CD_TRACK_MODE1);
-		uint32_t path_table = get_u32le(&buffer[0x8c]);
-		// path table
-		gdromfile->read_data(path_table, buffer, cdrom_file::CD_TRACK_MODE1);
 
-		// directory
-		uint8_t dir_sector[2048]{};
 		// find data of file
 		uint32_t file_start = 0, file_size = 0;
+		char name_buf[128];
+		memcpy(name_buf, name, sizeof(name_buf));
 
-		if (netpic == 0) {
-			uint32_t dir = get_u32le(&buffer[0x2]);
+		// some PICs with the network flag set come with GD-ROMs laid out like the others
+		// (Dragon Treasure), so if the file isn't where the flag says, look in the other layout
+		for (int attempt = 0; (attempt < 2) && !file_start; attempt++) {
+			bool const use_net = attempt ? !netpic : netpic;
+			memcpy(name, name_buf, sizeof(name_buf));
 
-			gdromfile->read_data(dir, dir_sector, cdrom_file::CD_TRACK_MODE1);
-			find_file(name, dir_sector, file_start, file_size);
+			// primary volume descriptor
+			// read frame 0xb06e (frame=sector+150)
+			// dimm board firmware starts straight from this frame
+			if (!gdromfile->read_data((use_net ? 0 : 45000) + 16, buffer, cdrom_file::CD_TRACK_MODE1) || memcmp(&buffer[1], "CD001", 5))
+				continue; // no file system there (a CD-R has no high density area)
+			uint32_t path_table = get_u32le(&buffer[0x8c]);
+			// path table
+			gdromfile->read_data(path_table, buffer, cdrom_file::CD_TRACK_MODE1);
 
-			if (file_start && (file_size == 0x100)) {
-				// read file
-				gdromfile->read_data(file_start, buffer, cdrom_file::CD_TRACK_MODE1);
-				// get "rom" file name
-				memset(name, '\0', 128);
-				memcpy(name, buffer + 0xc0, FILENAME_LENGTH - 1);
-			}
-		} else {
-			uint32_t i = 0;
-			while (i < 2048 && buffer[i] != 0)
-			{
-				if (buffer[i] == 3 && buffer[i + 8] == 'R' && buffer[i + 9] == 'O' && buffer[i + 10] == 'M')    // find ROM dir
-				{
-					uint32_t dir = get_u32le(&buffer[i + 2]);
-					memcpy(name, "ROM.BIN", 7);
-					gdromfile->read_data(dir, dir_sector, cdrom_file::CD_TRACK_MODE1);
-					break;
+			// directory
+			uint8_t dir_sector[2048]{};
+
+			if (!use_net) {
+				uint32_t dir = get_u32le(&buffer[0x2]);
+
+				gdromfile->read_data(dir, dir_sector, cdrom_file::CD_TRACK_MODE1);
+				find_file(name, dir_sector, file_start, file_size);
+
+				if (file_start && (file_size == 0x100)) {
+					// read file
+					gdromfile->read_data(file_start, buffer, cdrom_file::CD_TRACK_MODE1);
+					// get "rom" file name
+					memset(name, '\0', 128);
+					memcpy(name, buffer + 0xc0, FILENAME_LENGTH - 1);
 				}
-				i += buffer[i] + 8 + (buffer[i] & 1);
+			} else {
+				uint32_t i = 0;
+				while (i < 2048 && buffer[i] != 0)
+				{
+					if (buffer[i] == 3 && buffer[i + 8] == 'R' && buffer[i + 9] == 'O' && buffer[i + 10] == 'M')    // find ROM dir
+					{
+						uint32_t dir = get_u32le(&buffer[i + 2]);
+						memcpy(name, "ROM.BIN", 7);
+						gdromfile->read_data(dir, dir_sector, cdrom_file::CD_TRACK_MODE1);
+						break;
+					}
+					i += buffer[i] + 8 + (buffer[i] & 1);
+				}
 			}
-		}
 
-		find_file(name, dir_sector, file_start, file_size);
+			find_file(name, dir_sector, file_start, file_size);
+		}
 
 		if (file_start) {
 			uint32_t file_rounded_size = (file_size + 2047) & -2048;
