@@ -19,6 +19,7 @@ No ROMs are included or linked. You need your own dumps of the sets in MAME's `n
 - Virtua NBA (`virnbao`, `virnbap`): boots to the match demo and title. MAME crashed while decrypting the cartridge data.
 - Virtua Athletics (`vathlete`, `vathletep`), La Keyboard (`keyboard`) and Psyvariar 2 (`psyvar2`): boot to their attract modes. MAME stopped with "SH2DRC: invalid opcode".
 - Rhythm Tengoku (`rhytngk`): boots to the title and high-score table instead of a black screen.
+- Initial D (`initd`, `initdo`): was black after the boot screen, because the sound chip's MIDI port always reported a byte waiting from a drive board that isn't there. It now reaches its title and attract mode (see known issues for the card reader setting).
 
 Speed comes from drawing each frame on several CPU cores and from removing waits where the CPU stopped for the renderer for no reason. Each fix is in the renderer, not in one game, so other games may look better too.
 
@@ -29,7 +30,8 @@ Speed comes from drawing each frame on several CPU cores and from removing waits
 - Fog isn't emulated, and tiles that a game asks to draw in several passes are drawn once.
 - GD-ROM games are mostly untested so far (I'm still gathering the disc images).
 - Dragon Treasure (`dragntr`, `dragntr2`) now finds its game file but stops at NOW LOADING: it needs the satellite network hardware, which MAME doesn't emulate.
-- Initial D (Naomi 2) still doesn't boot: it waits for the force-feedback drive board, which MAME doesn't emulate.
+- Initial D (`initd`, `initdo`): reaches the title screen and attract mode once CARD R/W is set to OFF in the game's test mode (GAME ASSIGNMENTS); with it ON, the game stops at CARD R/W ERROR! (the card reader isn't emulated). There's no force feedback.
+- Club Kart (`clubkrt`): after the STEERING DRIVE BD. IS NOT CONNECTED screen, pressing Start goes on to a CONNECTION ERROR screen.
 - Some games stop on a Naomi "Caution" or "Error" screen on first boot. So far these look like settings (for example a game region that doesn't match the BIOS, or the 31 kHz monitor setting), not graphics faults.
 
 ## Download
