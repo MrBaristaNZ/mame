@@ -26,7 +26,7 @@ Speed comes from drawing each frame on several CPU cores and from removing waits
 ## Known issues
 
 - Marvel vs Capcom 2: a little lag around the start menu.
-- Alien Front: controls don't respond yet.
+- Alien Front: calibrate the wheel and pedals first (Test button > GAME TEST MODE > CONTROLLER SETTINGS; a fresh NVRAM has them all at 0, so the controls do nothing). Press Start and Shot together to skip the network check.
 - Fog isn't emulated, and tiles that a game asks to draw in several passes are drawn once.
 - GD-ROM games are mostly untested so far (I'm still gathering the disc images).
 - Dragon Treasure (`dragntr`, `dragntr2`) now finds its game file but stops at NOW LOADING: it needs the satellite network hardware, which MAME doesn't emulate.
