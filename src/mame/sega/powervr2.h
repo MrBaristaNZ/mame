@@ -100,6 +100,9 @@ public:
 	// TSP instruction word Fog Control
 	enum : uint8_t { FOG_TABLE, FOG_VERTEX, FOG_NONE, FOG_TABLE2 };
 
+	// texture coordinate wrap modes (texinfo::u_mode, v_mode)
+	enum : uint8_t { UV_WRAP, UV_FLIP, UV_CLAMP };
+
 	struct texinfo
 	{
 		uint32_t address = 0, vqbase = 0;
@@ -114,8 +117,7 @@ public:
 
 		uint32_t (powervr2_device::*r)(texinfo *t, float x, float y) = nullptr;
 		uint32_t (*blend)(uint32_t s, uint32_t d) = nullptr;
-		int (*u_func)(float uv, int size) = nullptr;
-		int (*v_func)(float uv, int size) = nullptr;
+		uint8_t u_mode = UV_WRAP, v_mode = UV_WRAP;
 		int palbase = 0, cd = 0;
 		uint8_t fog_mode = FOG_NONE;
 		bool color_clamp = false;
@@ -537,6 +539,7 @@ private:
 	static int uv_wrap(float uv, int size);
 	static int uv_flip(float uv, int size);
 	static int uv_clamp(float uv, int size);
+	static int uv_index(uint8_t mode, float uv, int size);
 
 	int fog_table_alpha(float invw) const;
 	uint32_t fog_pixel(texinfo const *ti, uint32_t c, float invw, uint32_t offset_color) const;
