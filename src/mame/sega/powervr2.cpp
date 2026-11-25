@@ -82,11 +82,11 @@ void powervr2_device::ta_map(address_map &map)
 // a0 = sdram_refresh
 // a4 = sdram_arb_cfg
 // a8 = sdram_cfg
-// b0 = fog_col_ram
-// b4 = fog_col_vert
-// b8 = fog_density
-// bc = fog_clamp_max
-// c0 = fog_clamp_min
+	map(0x00b0, 0x00b3).lrw32(NAME([this] () { return fog_col_ram; }), NAME([this] (offs_t offset, uint32_t data, uint32_t mem_mask) { COMBINE_DATA(&fog_col_ram); fog_col_ram &= 0x00ffffff; }));
+	map(0x00b4, 0x00b7).lrw32(NAME([this] () { return fog_col_vert; }), NAME([this] (offs_t offset, uint32_t data, uint32_t mem_mask) { COMBINE_DATA(&fog_col_vert); fog_col_vert &= 0x00ffffff; }));
+	map(0x00b8, 0x00bb).lrw32(NAME([this] () { return fog_density; }), NAME([this] (offs_t offset, uint32_t data, uint32_t mem_mask) { COMBINE_DATA(&fog_density); fog_density &= 0xffff; }));
+	map(0x00bc, 0x00bf).lrw32(NAME([this] () { return fog_clamp_max; }), NAME([this] (offs_t offset, uint32_t data, uint32_t mem_mask) { COMBINE_DATA(&fog_clamp_max); }));
+	map(0x00c0, 0x00c3).lrw32(NAME([this] () { return fog_clamp_min; }), NAME([this] (offs_t offset, uint32_t data, uint32_t mem_mask) { COMBINE_DATA(&fog_clamp_min); }));
 // c4 = spg_trigger_pos
 	map(0x00c8, 0x00cb).rw(FUNC(powervr2_device::spg_hblank_int_r), FUNC(powervr2_device::spg_hblank_int_w));
 	map(0x00cc, 0x00cf).rw(FUNC(powervr2_device::spg_vblank_int_r), FUNC(powervr2_device::spg_vblank_int_w));
@@ -701,6 +701,9 @@ void powervr2_device::tex_get_info(texinfo *t)
 	// shadow bit set and volume bit clear selects the intensity ("cheap shadow") mode
 	t->shadow      = (shadow && !volume) ? SHADOW_ENABLE : 0;
 	t->address     = textureaddress;
+	// per-vertex fog takes the coefficient from the offset color, so it needs one
+	t->fog_mode    = (fogcontrol == FOG_VERTEX && !offset_color_enable) ? FOG_NONE : fogcontrol;
+	t->color_clamp = colorclamp;
 	t->pf          = pixelformat;
 	t->palette     = 0;
 	t->mode        = (vqcompressed<<1);
@@ -1154,6 +1157,9 @@ void *powervr2_device::render_thread_callback(void *param, int threadid)
 		scale_uv = true;
 	}
 	bands = std::min<int>(bands, std::min<int>(TILE_ROWS, WORK_MAX_THREADS));
+
+	// FOG_DENSITY as a float: mantissa with bit 15 = 1.0, two's complement exponent
+	pvr->m_fog_scale = float(pvr->fog_density >> 8) / 128.0f * std::ldexp(1.0f, int8_t(pvr->fog_density & 0xff));
 
 	pvr->bin_triangles(bands, scale_uv);
 
@@ -2447,8 +2453,6 @@ void powervr2_device::process_ta_fifo()
 			{
 				// Alpha value in base/offset color is to be treated as 1.0/0xFF.
 				poly_base_color[0] = 1.0;
-				if (offset_color_enable)
-					poly_offs_color[0] = 1.0;
 			}
 			if (paratype == 4)
 			{
@@ -2902,6 +2906,51 @@ inline uint32_t powervr2_device::sample_textured(texinfo *ti, float u, float v, 
 	return c;
 }
 
+// Fog coefficient from the look-up table: 1/W times FOG_DENSITY, clamped to [1.0, 256.0); the float's
+// exponent and top 4 mantissa bits address the table, and the next mantissa bits interpolate between
+// the entry's two coefficients (the one for this address in bits 15-8, the next one in bits 7-0)
+inline int powervr2_device::fog_table_alpha(float invw) const
+{
+	float const z = std::clamp(invw * m_fog_scale, 1.0f, 255.9999f);
+	uint32_t const bits = f2u(z);
+	int const idx = ((((bits >> 23) & 0xff) - 127) << 4) | ((bits >> 19) & 0xf);
+	int const frac = (bits >> 11) & 0xff;
+	int const a0 = (fog_table[idx] >> 8) & 0xff;
+	int const a1 = fog_table[idx] & 0xff;
+	return a0 + (((a1 - a0) * frac) >> 8);
+}
+
+// Color clamp, then fog, for one pixel (before alpha blending)
+inline uint32_t powervr2_device::fog_pixel(texinfo const *ti, uint32_t c, float invw, uint32_t offset_color) const
+{
+	if (ti->color_clamp)
+	{
+		uint32_t r = 0;
+		for (int sh = 0; sh < 32; sh += 8)
+			r |= std::clamp<uint32_t>((c >> sh) & 0xff, (fog_clamp_min >> sh) & 0xff, (fog_clamp_max >> sh) & 0xff) << sh;
+		c = r;
+	}
+
+	int a;
+	uint32_t col;
+	switch (ti->fog_mode)
+	{
+	case FOG_TABLE:  a = fog_table_alpha(invw); col = fog_col_ram; break;
+	case FOG_VERTEX: a = offset_color >> 24;    col = fog_col_vert; break;
+	default:         return c;
+	}
+
+	if (!a)
+		return c;
+
+	// (1 - a) * pixel + a * fog color, with a mapped to 0-256 so that 0xff is all fog
+	a += a >> 7;
+	uint32_t r = c & 0xff000000;
+	for (int sh = 0; sh < 24; sh += 8)
+		r |= ((((c >> sh) & 0xff) * (256 - a) + ((col >> sh) & 0xff) * a) >> 8) << sh;
+	return r;
+}
+
 template <powervr2_device::pix_sample_fn sample_fn, int group_no>
 inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, uint64_t tilemask, int y, float xl, float xr, float ul, float ur, float vl, float vr, float wl, float wr, float const bl_in[4], float const br_in[4], float const offl_in[4], float const offr_in[4])
 {
@@ -2987,7 +3036,12 @@ inline void powervr2_device::render_hline(bitmap_rgb32 &bitmap, texinfo *ti, uin
 					offset_color = float_argb_to_packed_argb(offl);
 					base_color = float_argb_to_packed_argb(bl);
 				}
+				// look-up table mode 2: the base color becomes the fog color, its alpha the fog coefficient
+				if (ti->fog_mode == FOG_TABLE2)
+					base_color = (uint32_t(fog_table_alpha(wl)) << 24) | fog_col_ram;
 				c = (this->*sample_fn)(ti, u, v, offset_color, base_color);
+				if (ti->color_clamp || ti->fog_mode == FOG_TABLE || ti->fog_mode == FOG_VERTEX)
+					c = fog_pixel(ti, c, wl, offset_color);
 				if (group_no == DISPLAY_LIST_OPAQUE) {
 					*tdata = c;
 					*wbufline = wl;
@@ -4802,6 +4856,11 @@ void powervr2_device::device_start()
 	fpu_param_cfg = 0;
 	isp_feed_cfg = 0;
 	isp_backgnd_t = 0;
+	fog_col_ram = 0;
+	fog_col_vert = 0;
+	fog_density = 0;
+	fog_clamp_max = 0;
+	fog_clamp_min = 0;
 	spg_hblank_int = 0;
 	spg_vblank_int = 0;
 	spg_hblank = 0;
@@ -4862,6 +4921,11 @@ void powervr2_device::device_start()
 	save_item(NAME(fpu_param_cfg));
 	save_item(NAME(isp_feed_cfg));
 	save_item(NAME(isp_backgnd_t));
+	save_item(NAME(fog_col_ram));
+	save_item(NAME(fog_col_vert));
+	save_item(NAME(fog_density));
+	save_item(NAME(fog_clamp_max));
+	save_item(NAME(fog_clamp_min));
 	save_item(NAME(spg_hblank_int));
 	save_item(NAME(spg_vblank_int));
 	save_item(NAME(spg_hblank));

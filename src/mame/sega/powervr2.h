@@ -97,6 +97,9 @@ public:
 	float poly_base_color[4], poly_offs_color[4],
 		poly_last_mode_2_base_color[4];
 
+	// TSP instruction word Fog Control
+	enum : uint8_t { FOG_TABLE, FOG_VERTEX, FOG_NONE, FOG_TABLE2 };
+
 	struct texinfo
 	{
 		uint32_t address = 0, vqbase = 0;
@@ -114,6 +117,8 @@ public:
 		int (*u_func)(float uv, int size) = nullptr;
 		int (*v_func)(float uv, int size) = nullptr;
 		int palbase = 0, cd = 0;
+		uint8_t fog_mode = FOG_NONE;
+		bool color_clamp = false;
 	};
 
 	struct vert
@@ -406,6 +411,8 @@ private:
 	uint32_t fpu_param_cfg;
 	uint32_t isp_feed_cfg;
 	uint32_t isp_backgnd_t;
+	uint32_t fog_col_ram, fog_col_vert, fog_density, fog_clamp_max, fog_clamp_min;
+	float m_fog_scale = 0.0f; // FOG_DENSITY as a float, set when a render starts
 	uint32_t spg_hblank_int, spg_vblank_int, spg_control, spg_hblank, spg_load, spg_vblank, spg_width;
 	uint32_t vo_control, vo_startx, vo_starty;
 	uint32_t text_control;
@@ -530,6 +537,9 @@ private:
 	static int uv_wrap(float uv, int size);
 	static int uv_flip(float uv, int size);
 	static int uv_clamp(float uv, int size);
+
+	int fog_table_alpha(float invw) const;
+	uint32_t fog_pixel(texinfo const *ti, uint32_t c, float invw, uint32_t offset_color) const;
 
 	static inline uint32_t float_argb_to_packed_argb(float argb[4]);
 	static inline void packed_argb_to_float_argb(float dst[4], uint32_t in);
